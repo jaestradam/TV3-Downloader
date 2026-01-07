@@ -63,7 +63,7 @@ def make_session(retries=5, backoff_factor=0.5, status_forcelist=(429, 500, 502,
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
-    s.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; TV3enmassa/8.0-pro)'})
+    s.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; TV3enmassa/8.1-pro)'})
     s.trust_env = False
     return s
 
@@ -125,7 +125,6 @@ def obtener_program_info(nombonic):
 # IDs extraction (parallel pages)
 # ----------------------------
 def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
-    # First get total pages
     params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": 1}
     data = fetch_json("https://api.3cat.cat/videos", params=params)
     pags = int(data["resposta"]["paginacio"].get("total_pagines", 1))
@@ -161,7 +160,6 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
             except Exception as e:
                 logger.error("Error página %s: %s", page, e)
 
-    # unique & sort
     all_ids = sorted(set(all_ids), key=lambda x: int(x))
     logger.info("Total capítulos: %s", len(all_ids))
     return all_ids
@@ -170,7 +168,6 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
 # Extract media metadata per chapter (with cache)
 # ----------------------------
 def api_extract_media_urls(id_cap):
-    # try cache
     cached = cache_get(id_cap)
     if cached:
         return cached
@@ -188,7 +185,6 @@ def api_extract_media_urls(id_cap):
         info["title"] = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
         info["capitol"] = data.get("informacio", {}).get("capitol", str(id_cap))
         info["temporada"] = data.get("informacio", {}).get("temporada") or ""
-        # normalize files
         files = data.get("media", {}).get("url", []) or []
         if isinstance(files, dict):
             files = [files]
@@ -211,7 +207,6 @@ def api_extract_media_urls(id_cap):
                 vtts.append({"label": label or "vtt", "url": vtt})
         info["mp4s"] = mp4s
         info["vtts"] = vtts
-        # store in cache
         cache_set(id_cap, info)
         return info
     except Exception as e:
@@ -221,11 +216,10 @@ def api_extract_media_urls(id_cap):
 # ----------------------------
 # CSV + manifest builder (parallel)
 # ----------------------------
-def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2):
+def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
     ensure_folder("cache")
     rows = []
     failed = []
-    lock = None
 
     def worker(cid):
         attempts = 0
@@ -239,18 +233,22 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
         if not res:
             failed.append(cid)
             return []
-        # build rows: one per asset (mp4 or vtt)
         program = safe_filename(res["programa"])
         title = safe_filename(res["title"])
         capitol = res.get("capitol", str(res["id"]))
         safe_name = f"{program} - {title}"
         local = []
+        # Filtrar mp4 por quality_filter
         for mp in res["mp4s"]:
+            if quality_filter and quality_filter not in mp["label"]:
+                continue
             fname = mp["url"].split("/")[-1]
             local.append([capitol, program, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
-        for vt in res["vtts"]:
-            fname = vt["url"].split("/")[-1]
-            local.append([capitol, program, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
+        # Subtítulos solo si include_vtt=True
+        if include_vtt:
+            for vt in res["vtts"]:
+                fname = vt["url"].split("/")[-1]
+                local.append([capitol, program, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
         return local
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -266,20 +264,20 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
                     failed.append(cid)
                 p.update(1)
 
-    # sort rows by capitol number (first column)
     def safe_int(x):
         try:
             return int(x)
         except:
             return 0
     rows_sorted = sorted(rows, key=lambda r: safe_int(r[0]))
-    # write CSV
+
+    # CSV
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Capitol", "Program", "Title", "Name", "Quality", "Link", "File Name", "Type"])
         writer.writerows(rows_sorted)
 
-    # manifest JSON
+    # Manifest JSON
     manifest = {"generated_at": time.time(), "items": []}
     for r in rows_sorted:
         manifest["items"].append({
@@ -305,7 +303,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
     return output_csv, manifest_path, len(rows_sorted)
 
 # ----------------------------
-# Downloader (resume + per-file tqdm + global tqdm)
+# Downloader (igual que antes)
 # ----------------------------
 def supports_range(url):
     try:
@@ -317,50 +315,32 @@ def supports_range(url):
     return False
 
 def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=True):
-    """
-    Download with resume if supported. Shows individual tqdm bar (bytes, speed, ETA).
-    """
     ensure_folder(os.path.dirname(dst))
     tmp = dst + ".part"
-
-    # determine existing size
-    existing = 0
-    if os.path.exists(tmp):
-        existing = os.path.getsize(tmp)
-
+    existing = os.path.getsize(tmp) if os.path.exists(tmp) else 0
     headers = {}
     total = None
     try:
-        # try HEAD to get length
         h = SESSION.head(url, timeout=10)
         h.raise_for_status()
         total = int(h.headers.get("Content-Length", 0)) if h.headers.get("Content-Length") else None
         accept_ranges = 'accept-ranges' in h.headers.get('accept-ranges','').lower() or 'bytes' in h.headers.get('accept-ranges','').lower()
     except Exception:
         accept_ranges = False
-
-    # if resume requested and server supports
     if use_range and existing and accept_ranges:
         headers['Range'] = f'bytes={existing}-'
-
     last_exc = None
     backoff = 1
     for attempt in range(1, max_retries+1):
         try:
             with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
                 r.raise_for_status()
-                # compute total for tqdm
                 content_length = r.headers.get('Content-Length')
                 if content_length:
                     content_length = int(content_length)
-                    if headers.get('Range') and existing:
-                        total_bytes = existing + content_length
-                    else:
-                        total_bytes = existing + content_length
+                    total_bytes = existing + content_length
                 else:
                     total_bytes = total or 0
-
-                # tqdm individual
                 with open(tmp, "ab") as f, tqdm(
                     total=total_bytes,
                     initial=existing,
@@ -376,7 +356,6 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
                         if chunk:
                             f.write(chunk)
                             pbar.update(len(chunk))
-                # finished, rename
                 os.replace(tmp, dst)
                 return dst
         except Exception as e:
@@ -385,13 +364,9 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
             time.sleep(backoff)
             backoff *= 2
     logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
-    # leave tmp for resume
     return None
 
 def download_with_aria2(url, dst, aria2c_bin="aria2c"):
-    """
-    Simple aria2 wrapper: spawn aria2c with appropriate args.
-    """
     ensure_folder(os.path.dirname(dst))
     cmd = [
         aria2c_bin,
@@ -414,46 +389,33 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
     program_safe = safe_filename(program_name)
     base_folder = videos_folder
     ensure_folder(base_folder)
-
     rows = []
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for r in reader:
             rows.append(r)
-
     logger.info("Iniciando descargas: %s archivos", len(rows))
-
-    # prepare futures
     with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=total_files, desc="Progreso total", unit="tarea") as pbar:
         futures = {}
         for row in rows:
             link = row["Link"].strip()
             fname = row["File Name"].strip()
             type_ = row.get("Type","")
-            # build dst path: downloads/Program/Season X/
             program = safe_filename(row["Program"])
-            season = ""  # we don't have season at CSV level; manifest could be used
             folder = os.path.join(base_folder, program)
             ensure_folder(folder)
-            # build filename SxxExx if possible (capitol is row[0])
             cap = row["Capitol"]
-            # try to format SxxExx if 'capitol' numeric and we know season from cache
             try:
-                cap_int = int(cap)
-                # basic S01E<cap> naming (could be improved)
                 final_name = f"S01E{int(cap):02d} - {row['Name']}.{fname.split('.')[-1]}"
             except Exception:
                 final_name = f"{row['Name']}.{fname.split('.')[-1]}"
             dst = os.path.join(folder, safe_filename(final_name))
-
             desc_name = os.path.basename(dst)
-            # choose method
             if use_aria2:
                 fut = ex.submit(download_with_aria2, link, dst)
             else:
                 fut = ex.submit(download_chunked, link, dst, desc_name, 4, 30, resume)
             futures[fut] = dst
-
         for future in as_completed(futures):
             dst = futures[future]
             try:
@@ -465,7 +427,6 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
             except Exception as e:
                 logger.error("Error en descarga: %s (%s)", dst, e)
             pbar.update(1)
-
     logger.info("Descargas finalizadas.")
 
 # ----------------------------
@@ -495,12 +456,17 @@ def main():
         info = obtener_program_info(args.programa)
         logger.info("Programa: %s  id=%s", info.get("titol"), info.get("id"))
         cids = obtener_ids_capitulos(info.get("id"), items_pagina=args.pagesize, workers=args.workers)
-        csv_path, manifest_path, total_files = build_links_csv(cids, output_csv=args.csv, manifest_path=args.manifest, workers=args.workers)
-        # if only list -> stop
+        csv_path, manifest_path, total_files = build_links_csv(
+            cids, 
+            output_csv=args.csv, 
+            manifest_path=args.manifest, 
+            workers=args.workers,
+            include_vtt=not args.no_vtt,
+            quality_filter=args.quality
+        )
         if args.only_list:
             logger.info("Solo list. CSV y manifest generados.")
             return
-        # count total files from manifest
         with open(manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
         total_assets = len(manifest.get("items", []))
