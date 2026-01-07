@@ -13,6 +13,64 @@ Características incluidas:
 - Integración opcional aria2 (si está disponible) — ignorada para resume de .part
 - Logging a consola (INFO) y fichero (DEBUG)
 """
+
+# ----------------------------
+# Dependency bootstrap
+# ----------------------------
+import sys
+import subprocess
+
+REQUIRED_PACKAGES = {
+    "requests": "requests",
+    "tqdm": "tqdm",
+}
+
+def ensure_dependencies():
+    missing = []
+
+    for module, package in REQUIRED_PACKAGES.items():
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+
+    if not missing:
+        return
+
+    print("Faltan dependencias necesarias:")
+    for p in missing:
+        print(f"  - {p}")
+
+    # Preguntar al usuario si quiere instalar
+    respuesta = input("\n¿Deseas instalar automáticamente estas dependencias? (Y/N): ").strip().lower()
+    if respuesta != 'y':
+        print("No se instalaron las dependencias. Se detiene la ejecución.")
+        sys.exit(1)
+
+    print("\nIntentando instalarlas automáticamente...\n")
+
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", *missing]
+        )
+    except Exception as e:
+        print("\n❌ Error instalando dependencias:", e)
+        print("Instálalas manualmente con:")
+        print(f"  {sys.executable} -m pip install {' '.join(missing)}")
+        sys.exit(1)
+
+    # Reintentar imports
+    for module in REQUIRED_PACKAGES:
+        try:
+            __import__(module)
+        except ImportError:
+            print(f"\n❌ No se pudo importar {module} tras instalar dependencias.")
+            sys.exit(1)
+
+# Ejecutar bootstrap
+ensure_dependencies()
+
+
 import argparse
 import requests
 import csv
@@ -164,10 +222,9 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
             except Exception as e:
                 logger.error("Error página %s: %s", page, e)
 
-    #all_ids = sorted(set(all_ids), key=lambda x: int(x))
-    #all_tcaps = sorted(set(all_tcaps), key=lambda x: int(x))
     logger.info("Total capítulos: %s", len(all_ids))
-    return all_ids,all_tcaps
+    #return all_ids,all_tcaps
+    return [{"id": id, "tcap": tcap} for id, tcap in zip(all_ids, all_tcaps)]
 
 # ----------------------------
 # Extract media metadata per chapter (with cache)
@@ -221,19 +278,19 @@ def api_extract_media_urls(id_cap):
 # ----------------------------
 # CSV + manifest builder (parallel)
 # ----------------------------
-def build_links_csv(cids, tcaps, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
+def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
     ensure_folder("cache")
     rows = []
     failed = []
 
-    def worker(cid,idxtcap):
+    def worker(cid):
         attempts = 0
         while attempts <= retry_failed:
             attempts += 1
-            res = api_extract_media_urls(cid)
+            res = api_extract_media_urls(cid["id"])
             if res:
                 break
-            logger.warning("Retry media id=%s attempt=%s", cid, attempts)
+            logger.warning("Retry media id=%s attempt=%s", cid["id"], attempts)
             time.sleep(1 * attempts)
         if not res:
             failed.append(cid)
@@ -243,8 +300,7 @@ def build_links_csv(cids, tcaps, output_csv="links-fitxers.csv", manifest_path="
         safe_title = safe_filename(res["title"]).split("-", 1)[1].strip()
         capitol = res.get("capitol", str(res["id"]))
         temporada = res.get("temporada")
-        tcap = tcaps[idxtcap - 1]
-        #safe_name = f"{program} - {title}"
+        tcap = cid["tcap"]
         safe_name = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
         local = []
         # Filtrar mp4 por quality_filter
@@ -261,7 +317,7 @@ def build_links_csv(cids, tcaps, output_csv="links-fitxers.csv", manifest_path="
         return local
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(worker, cid, idx): cid for idx, cid in enumerate(cids, start=1)}
+        futures = {ex.submit(worker, cid): cid for cid in cids}
         with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=not sys.stdout.isatty()) as p:
             for future in as_completed(futures):
                 cid = futures[future]
@@ -546,8 +602,7 @@ def main():
         logger.info("Programa: %s  id=%s", info.get("titol"), info.get("id"))
         cids = obtener_ids_capitulos(info.get("id"), items_pagina=args.pagesize, workers=args.workers)
         csv_path, manifest_path, total_files = build_links_csv(
-            cids[0],
-            cids[1],
+            cids,
             output_csv=args.csv,
             manifest_path=args.manifest,
             workers=args.workers,
