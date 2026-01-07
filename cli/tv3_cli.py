@@ -142,7 +142,8 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
                 if isinstance(item_list, dict):
                     item_list = [item_list]
                 ids_local = [i["id"] for i in item_list if "id" in i]
-                return ids_local
+                tcap_local = [i["capitol_temporada"] for i in item_list if "capitol_temporada" in i]
+                return ids_local, tcap_local
             except Exception as e:
                 logger.debug("fetch_page(%s) error (attempt %s): %s", page, attempts, e)
                 time.sleep(1 * attempts)
@@ -150,20 +151,23 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
         return []
 
     all_ids = []
+    all_tcaps = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(fetch_page, p): p for p in range(1, pags+1)}
         for future in as_completed(futures):
             page = futures[future]
             try:
                 ids = future.result()
-                logger.info("Página %s -> %s ids", page, len(ids))
-                all_ids.extend(ids)
+                logger.info("Página %s -> %s ids", page, len(ids[0]))
+                all_ids.extend(ids[0])
+                all_tcaps.extend(ids[1])
             except Exception as e:
                 logger.error("Error página %s: %s", page, e)
 
-    all_ids = sorted(set(all_ids), key=lambda x: int(x))
+    #all_ids = sorted(set(all_ids), key=lambda x: int(x))
+    #all_tcaps = sorted(set(all_tcaps), key=lambda x: int(x))
     logger.info("Total capítulos: %s", len(all_ids))
-    return all_ids
+    return all_ids,all_tcaps
 
 # ----------------------------
 # Extract media metadata per chapter (with cache)
@@ -185,7 +189,7 @@ def api_extract_media_urls(id_cap):
         info["programa"] = data.get("informacio", {}).get("programa", "UnknownProgram")
         info["title"] = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
         info["capitol"] = data.get("informacio", {}).get("capitol", str(id_cap))
-        info["temporada"] = data.get("informacio", {}).get("temporada") or ""
+        info["temporada"] = data.get("informacio", {}).get("temporada", {}).get("idName", "0")[7:] or "0"
         files = data.get("media", {}).get("url", []) or []
         if isinstance(files, dict):
             files = [files]
@@ -217,12 +221,12 @@ def api_extract_media_urls(id_cap):
 # ----------------------------
 # CSV + manifest builder (parallel)
 # ----------------------------
-def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
+def build_links_csv(cids, tcaps, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
     ensure_folder("cache")
     rows = []
     failed = []
 
-    def worker(cid):
+    def worker(cid,idxtcap):
         attempts = 0
         while attempts <= retry_failed:
             attempts += 1
@@ -236,24 +240,28 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
             return []
         program = safe_filename(res["programa"])
         title = safe_filename(res["title"])
+        safe_title = safe_filename(res["title"]).split("-", 1)[1].strip()
         capitol = res.get("capitol", str(res["id"]))
-        safe_name = f"{program} - {title}"
+        temporada = res.get("temporada")
+        tcap = tcaps[idxtcap - 1]
+        #safe_name = f"{program} - {title}"
+        safe_name = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
         local = []
         # Filtrar mp4 por quality_filter
         for mp in res["mp4s"]:
             if quality_filter and quality_filter not in mp["label"]:
                 continue
             fname = mp["url"].split("/")[-1]
-            local.append([capitol, program, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
+            local.append([capitol, program, temporada, tcap, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
         # Subtítulos solo si include_vtt=True
         if include_vtt:
             for vt in res["vtts"]:
                 fname = vt["url"].split("/")[-1]
-                local.append([capitol, program, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
+                local.append([capitol, program, temporada, tcap, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
         return local
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(worker, cid): cid for cid in cids}
+        futures = {ex.submit(worker, cid, idx): cid for idx, cid in enumerate(cids, start=1)}
         with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=not sys.stdout.isatty()) as p:
             for future in as_completed(futures):
                 cid = futures[future]
@@ -275,7 +283,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
     # CSV
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Capitol", "Program", "Title", "Name", "Quality", "Link", "File Name", "Type"])
+        writer.writerow(["Capitol", "Program", "Temporada", "TempCap", "Title", "Name", "Quality", "Link", "File Name", "Type"])
         writer.writerows(rows_sorted)
 
     # Manifest JSON
@@ -284,12 +292,14 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
         manifest["items"].append({
             "capitol": r[0],
             "program": r[1],
-            "title": r[2],
-            "name": r[3],
-            "quality": r[4],
-            "link": r[5],
-            "file_name": r[6],
-            "type": r[7]
+            "temporada": r[2],
+            "temporada_capitol": r[3],
+            "title": r[4],
+            "name": r[5],
+            "quality": r[6],
+            "link": r[7],
+            "file_name": r[8],
+            "type": r[9]
         })
     with open(manifest_path, "w", encoding="utf-8") as mf:
         json.dump(manifest, mf, ensure_ascii=False, indent=2)
@@ -429,10 +439,9 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
         folder = os.path.join(base_folder, program)
         ensure_folder(folder)
         cap = row["Capitol"]
-        try:
-            final_name = f"S01E{int(cap):02d} - {row['Name']}.{fname.split('.')[-1]}"
-        except Exception:
-            final_name = f"{row['Name']}.{fname.split('.')[-1]}"
+        temporada = row["Temporada"]
+        tcap = row["TempCap"]
+        final_name = f"{row['Name']}.{fname.split('.')[-1]}"
         dst = os.path.join(folder, safe_filename(final_name))
         tmp = dst + ".part"
 
@@ -524,6 +533,7 @@ def main():
     parser.add_argument("--aria2", action="store_true", help="Usar aria2c para descargas si disponible")
     parser.add_argument("--resume", action="store_true", help="Habilitar resume con Range si es posible (modo resume-only: solo actúa sobre .part)")
     parser.add_argument("--debug", action="store_true", help="Activar debug logs")
+    parser.add_argument("--output", type=str, default=".", help="Ruta base de descarga")
     args = parser.parse_args()
 
     if args.debug:
@@ -536,7 +546,8 @@ def main():
         logger.info("Programa: %s  id=%s", info.get("titol"), info.get("id"))
         cids = obtener_ids_capitulos(info.get("id"), items_pagina=args.pagesize, workers=args.workers)
         csv_path, manifest_path, total_files = build_links_csv(
-            cids,
+            cids[0],
+            cids[1],
             output_csv=args.csv,
             manifest_path=args.manifest,
             workers=args.workers,
@@ -549,7 +560,7 @@ def main():
         with open(manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
         total_assets = len(manifest.get("items", []))
-        download_from_csv(csv_path, info.get("titol"), total_assets, max_workers=args.workers, use_aria2=args.aria2, resume=args.resume)
+        download_from_csv(csv_path, info.get("titol"), total_assets, videos_folder=args.output, max_workers=args.workers, use_aria2=args.aria2, resume=args.resume)
         logger.info("Proceso completado.")
     except KeyboardInterrupt:
         logger.warning("Interrumpido por usuario.")
