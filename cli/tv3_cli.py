@@ -9,8 +9,8 @@ Características incluidas:
 - CSV + manifest.json
 - Caché (cache/<id>.json)
 - Descarga paralela con barra global + barras individuales (velocidad, ETA)
-- Resume con Range support
-- Integración opcional aria2 (si está disponible)
+- Resume con Range support (y modo --resume que solo actúa sobre .part)
+- Integración opcional aria2 (si está disponible) — ignorada para resume de .part
 - Logging a consola (INFO) y fichero (DEBUG)
 """
 import argparse
@@ -303,7 +303,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
     return output_csv, manifest_path, len(rows_sorted)
 
 # ----------------------------
-# Downloader (igual que antes)
+# Downloader (igual que antes, con resume-only logic en download_from_csv)
 # ----------------------------
 def supports_range(url):
     try:
@@ -319,31 +319,44 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
     tmp = dst + ".part"
     existing = os.path.getsize(tmp) if os.path.exists(tmp) else 0
     headers = {}
-    total = None
-    try:
-        h = SESSION.head(url, timeout=10)
-        h.raise_for_status()
-        total = int(h.headers.get("Content-Length", 0)) if h.headers.get("Content-Length") else None
-        accept_ranges = 'accept-ranges' in h.headers.get('accept-ranges','').lower() or 'bytes' in h.headers.get('accept-ranges','').lower()
-    except Exception:
-        accept_ranges = False
-    if use_range and existing and accept_ranges:
-        headers['Range'] = f'bytes={existing}-'
-    last_exc = None
+
+    if use_range and existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+
     backoff = 1
-    for attempt in range(1, max_retries+1):
+    last_exc = None
+
+    for attempt in range(1, max_retries + 1):
         try:
             with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
-                r.raise_for_status()
-                content_length = r.headers.get('Content-Length')
-                if content_length:
-                    content_length = int(content_length)
-                    total_bytes = existing + content_length
+
+                # ---------- CLAVE ----------
+                if "Range" in headers:
+                    if r.status_code == 206:
+                        mode = "ab"   # resume REAL
+                    elif r.status_code == 416:
+                        # Ya estaba completo
+                        os.replace(tmp, dst)
+                        return dst
+                    else:
+                        # 200 OK → servidor ignoró Range
+                        logger.warning("Servidor ignoró Range para %s, reiniciando descarga", dst)
+                        existing = 0
+                        headers.pop("Range", None)
+                        mode = "wb"
                 else:
-                    total_bytes = total or 0
-                with open(tmp, "ab") as f, tqdm(
+                    mode = "wb"
+                # ---------------------------
+
+                r.raise_for_status()
+
+                total = r.headers.get("Content-Length")
+                total = int(total) if total else None
+                total_bytes = (existing + total) if total and mode == "ab" else total
+
+                with open(tmp, mode) as f, tqdm(
                     total=total_bytes,
-                    initial=existing,
+                    initial=existing if mode == "ab" else 0,
                     unit="B",
                     unit_scale=True,
                     unit_divisor=1024,
@@ -356,13 +369,16 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
                         if chunk:
                             f.write(chunk)
                             pbar.update(len(chunk))
+
                 os.replace(tmp, dst)
                 return dst
+
         except Exception as e:
             last_exc = e
-            logger.debug("download attempt %s for %s failed: %s", attempt, url, e)
+            logger.debug("download attempt %s failed for %s: %s", attempt, url, e)
             time.sleep(backoff)
             backoff *= 2
+
     logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
     return None
 
@@ -386,36 +402,75 @@ def download_with_aria2(url, dst, aria2c_bin="aria2c"):
         return None
 
 def download_from_csv(csv_path, program_name, total_files, videos_folder="downloads", subtitols_folder="downloads", max_workers=6, use_aria2=False, resume=True):
+    """
+    Si resume=True -> solo intenta descargar archivos que tengan dst + '.part' existentes.
+    Si resume=False -> omite los archivos completos (dst) y descarga los que faltan.
+    """
     program_safe = safe_filename(program_name)
     base_folder = videos_folder
     ensure_folder(base_folder)
+
     rows = []
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for r in reader:
             rows.append(r)
-    logger.info("Iniciando descargas: %s archivos", len(rows))
-    with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=total_files, desc="Progreso total", unit="tarea") as pbar:
-        futures = {}
-        for row in rows:
-            link = row["Link"].strip()
-            fname = row["File Name"].strip()
-            type_ = row.get("Type","")
-            program = safe_filename(row["Program"])
-            folder = os.path.join(base_folder, program)
-            ensure_folder(folder)
-            cap = row["Capitol"]
-            try:
-                final_name = f"S01E{int(cap):02d} - {row['Name']}.{fname.split('.')[-1]}"
-            except Exception:
-                final_name = f"{row['Name']}.{fname.split('.')[-1]}"
-            dst = os.path.join(folder, safe_filename(final_name))
-            desc_name = os.path.basename(dst)
+
+    logger.info("Iniciando descargas: %s archivos (manifiesto)", len(rows))
+
+    # Preparar lista de tareas según modo resume
+    tasks = []  # cada item = dict(link, dst, desc_name, method_use_aria2_bool)
+    for row in rows:
+        link = row["Link"].strip()
+        fname = row["File Name"].strip()
+        program = safe_filename(row["Program"])
+        folder = os.path.join(base_folder, program)
+        ensure_folder(folder)
+        cap = row["Capitol"]
+        try:
+            final_name = f"S01E{int(cap):02d} - {row['Name']}.{fname.split('.')[-1]}"
+        except Exception:
+            final_name = f"{row['Name']}.{fname.split('.')[-1]}"
+        dst = os.path.join(folder, safe_filename(final_name))
+        tmp = dst + ".part"
+
+        # Resume-only mode: solo filas con .part existentes
+        if resume:
+            if not os.path.exists(tmp):
+                logger.debug("Skipping %s: no existe %s (resume-only)", dst, os.path.basename(tmp))
+                continue
+            # Forzar uso del downloader interno para reanudar .part (aria2 no trabaja con nuestro .part)
             if use_aria2:
-                fut = ex.submit(download_with_aria2, link, dst)
+                logger.info("resume=True: forzando downloader interno para reanudar %s (aria2 ignorado)", dst)
+                method_use_aria2 = False
             else:
-                fut = ex.submit(download_chunked, link, dst, desc_name, 4, 30, resume)
-            futures[fut] = dst
+                method_use_aria2 = False
+        else:
+            # Normal mode: omitimos si ya existe el archivo completo
+            if os.path.exists(dst):
+                logger.info("Skip %s, ya existe", dst)
+                continue
+            method_use_aria2 = bool(use_aria2)
+
+        desc_name = os.path.basename(dst)
+        tasks.append({"link": link, "dst": dst, "desc": desc_name, "use_aria2": method_use_aria2})
+
+    if not tasks:
+        logger.info("No hay tareas para procesar (según el modo resume/estado de .part/archivos existentes).")
+        return
+
+    logger.info("Tareas a ejecutar: %s", len(tasks))
+
+    # Ejecutar descargas paralelas
+    with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(tasks), desc="Progreso total", unit="tarea") as pbar:
+        futures = {}
+        for t in tasks:
+            if t["use_aria2"]:
+                fut = ex.submit(download_with_aria2, t["link"], t["dst"])
+            else:
+                fut = ex.submit(download_chunked, t["link"], t["dst"], t["desc"], 4, 30, not resume)  # use_range=True en modo normal; en resume ya estamos reanudando por .part
+            futures[fut] = t["dst"]
+
         for future in as_completed(futures):
             dst = futures[future]
             try:
@@ -427,6 +482,7 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
             except Exception as e:
                 logger.error("Error en descarga: %s (%s)", dst, e)
             pbar.update(1)
+
     logger.info("Descargas finalizadas.")
 
 # ----------------------------
@@ -443,7 +499,7 @@ def main():
     parser.add_argument("--quality", type=str, default="", help="Filtrar calidad e.g. 720")
     parser.add_argument("--no-vtt", action="store_true", help="No descargar subtitulos")
     parser.add_argument("--aria2", action="store_true", help="Usar aria2c para descargas si disponible")
-    parser.add_argument("--resume", action="store_true", help="Habilitar resume con Range si es posible")
+    parser.add_argument("--resume", action="store_true", help="Habilitar resume con Range si es posible (modo resume-only: solo actúa sobre .part)")
     parser.add_argument("--debug", action="store_true", help="Activar debug logs")
     args = parser.parse_args()
 
@@ -457,9 +513,9 @@ def main():
         logger.info("Programa: %s  id=%s", info.get("titol"), info.get("id"))
         cids = obtener_ids_capitulos(info.get("id"), items_pagina=args.pagesize, workers=args.workers)
         csv_path, manifest_path, total_files = build_links_csv(
-            cids, 
-            output_csv=args.csv, 
-            manifest_path=args.manifest, 
+            cids,
+            output_csv=args.csv,
+            manifest_path=args.manifest,
             workers=args.workers,
             include_vtt=not args.no_vtt,
             quality_filter=args.quality
