@@ -1,31 +1,54 @@
 #!/usr/bin/env python3
+"""
+
+Características incluidas:
+- CLI con opciones
+- Session con Retries
+- Extracción paralela de IDs
+- Extracción por capítulo (mp4 + vtt)
+- CSV + manifest.json
+- Caché (cache/<id>.json)
+- Descarga paralela con barra global + barras individuales (velocidad, ETA)
+- Resume con Range support
+- Integración opcional aria2 (si está disponible)
+- Logging a consola (INFO) y fichero (DEBUG)
+"""
 import argparse
 import requests
 import csv
 import os
 import re
 import time
+import json
 import logging
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from tqdm import tqdm
 
-# -----------------------------
-# CONFIG / LOGGING
-# -----------------------------
+# ----------------------------
+# Config / Logging
+# ----------------------------
+LOGFILE = "tv3_cli_debug.log"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("TV3")
+file_handler = logging.FileHandler(LOGFILE, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+logger.addHandler(file_handler)
 
-# -----------------------------
-# UTILIDADES
-# -----------------------------
+# ----------------------------
+# Utilities
+# ----------------------------
 def ensure_folder(path):
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
 
 def safe_filename(name):
-    return re.sub(r'[\\/:"*?<>|]+', '-', name)
+    name = re.sub(r'[\\/:"*?<>|]+', '-', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
 
 def make_session(retries=5, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504)):
     s = requests.Session()
@@ -35,186 +58,174 @@ def make_session(retries=5, backoff_factor=0.5, status_forcelist=(429, 500, 502,
         connect=retries,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
-        allowed_methods=frozenset(['GET','POST'])
+        allowed_methods=frozenset(['GET','POST','HEAD'])
     )
     adapter = HTTPAdapter(max_retries=retry)
     s.mount("https://", adapter)
     s.mount("http://", adapter)
-    s.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; TV3enmassa/1.0)'})
+    s.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; TV3enmassa/8.0-pro)'})
+    s.trust_env = False
     return s
 
 SESSION = make_session()
 
-def fetch_json(url, params=None, timeout=15):
+def fetch_json(url, params=None, timeout=20):
     r = SESSION.get(url, params=params, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
-# -----------------------------
-# API helpers (mejorados)
-# -----------------------------
-def obtener_program_id(nombonic):
-    data = fetch_json("https://api.3cat.cat/programestv")
-    items = []
-    try:
-        lletra = data["resposta"]["items"]["lletra"]
-        if isinstance(lletra, dict) and "item" in lletra:
-            it = lletra["item"]
-            items = it if isinstance(it, list) else [it]
-        elif isinstance(lletra, list):
-            for l in lletra:
-                if "item" in l:
-                    it = l["item"]
-                    items += it if isinstance(it, list) else [it]
-    except Exception:
-        pass
+# ----------------------------
+# Cache helpers
+# ----------------------------
+CACHE_DIR = "cache"
+ensure_folder(CACHE_DIR)
 
-    for p in items:
-        if isinstance(p, dict) and p.get("nombonic") == nombonic:
-            return p.get("id")
-    raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
-
-def obtener_program_name(nombonic):
-    data = fetch_json("https://api.3cat.cat/programestv")
-    items = []
-    try:
-        lletra = data["resposta"]["items"]["lletra"]
-        if isinstance(lletra, dict) and "item" in lletra:
-            it = lletra["item"]
-            items = it if isinstance(it, list) else [it]
-        elif isinstance(lletra, list):
-            for l in lletra:
-                if "item" in l:
-                    it = l["item"]
-                    items += it if isinstance(it, list) else [it]
-    except Exception:
-        pass
-
-    for p in items:
-        if isinstance(p, dict) and p.get("nombonic") == nombonic:
-            return p.get("titol")
-    raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def obtener_ids_capitulos(programatv_id, items_pagina=1000, orden="capitol", workers=10):
-    """
-    Obtiene TODOS los IDs de los capítulos de un programa, paginando en paralelo.
-    """
-    # 1) Primero obtener cuántas páginas hay
-    params = {
-        "items_pagina": items_pagina,
-        "ordre": orden,
-        "programatv_id": programatv_id,
-        "pagina": 1
-    }
-    data = fetch_json("https://api.3cat.cat/videos", params=params)
-    pags = data["resposta"]["paginacio"]["total_pagines"]
-
-    print(f"📄 Total páginas: {pags}")
-
-    # 2) Función para obtener IDs de una sola página
-    def fetch_page(page):
+def cache_get(id_):
+    path = os.path.join(CACHE_DIR, f"{id_}.json")
+    if os.path.exists(path):
         try:
-            params = {
-                "items_pagina": items_pagina,
-                "ordre": orden,
-                "programatv_id": programatv_id,
-                "pagina": page
-            }
-            d = fetch_json("https://api.3cat.cat/videos", params=params)
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
 
-            item_list = d["resposta"]["items"]["item"]
-            if isinstance(item_list, dict):
-                item_list = [item_list]
+def cache_set(id_, data):
+    path = os.path.join(CACHE_DIR, f"{id_}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.debug("Cache write failed %s: %s", path, e)
 
-            ids_local = [i["id"] for i in item_list if "id" in i]
-            return ids_local
+# ----------------------------
+# API helpers (fusión programestv)
+# ----------------------------
+def obtener_program_info(nombonic):
+    data = fetch_json("https://api.3cat.cat/programestv")
+    try:
+        lletra = data["resposta"]["items"]["lletra"]
+        items = []
+        if isinstance(lletra, dict) and "item" in lletra:
+            it = lletra["item"]
+            items = it if isinstance(it, list) else [it]
+        elif isinstance(lletra, list):
+            for l in lletra:
+                if "item" in l:
+                    it = l["item"]
+                    items += it if isinstance(it, list) else [it]
+        for p in items:
+            if isinstance(p, dict) and p.get("nombonic") == nombonic:
+                return {"id": p.get("id"), "titol": p.get("titol"), "nombonic": p.get("nombonic")}
+    except Exception as e:
+        logger.debug("Error parsing programestv: %s", e)
+    raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
 
-        except Exception as e:
-            print(f"⚠️ Error en página {page}: {e}")
-            return []  # no rompe el proceso
+# ----------------------------
+# IDs extraction (parallel pages)
+# ----------------------------
+def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
+    # First get total pages
+    params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": 1}
+    data = fetch_json("https://api.3cat.cat/videos", params=params)
+    pags = int(data["resposta"]["paginacio"].get("total_pagines", 1))
+    logger.info("Total páginas: %s", pags)
 
-    # 3) Ejecutar en paralelo todas las páginas
+    def fetch_page(page):
+        attempts = 0
+        while attempts <= max_retries:
+            attempts += 1
+            try:
+                params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": page}
+                d = fetch_json("https://api.3cat.cat/videos", params=params)
+                item_list = d["resposta"]["items"]["item"]
+                if isinstance(item_list, dict):
+                    item_list = [item_list]
+                ids_local = [i["id"] for i in item_list if "id" in i]
+                return ids_local
+            except Exception as e:
+                logger.debug("fetch_page(%s) error (attempt %s): %s", page, attempts, e)
+                time.sleep(1 * attempts)
+        logger.error("Página %s falló tras %s intentos", page, max_retries)
+        return []
+
     all_ids = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(fetch_page, page): page for page in range(1, pags+1)}
-
+        futures = {ex.submit(fetch_page, p): p for p in range(1, pags+1)}
         for future in as_completed(futures):
             page = futures[future]
             try:
-                ids_pag = future.result()
-                print(f"✔ Página {page}: {len(ids_pag)} capítulos")
-                all_ids.extend(ids_pag)
+                ids = future.result()
+                logger.info("Página %s -> %s ids", page, len(ids))
+                all_ids.extend(ids)
             except Exception as e:
-                print(f"❌ Error inesperado en página {page}: {e}")
+                logger.error("Error página %s: %s", page, e)
 
-    # 4) Eliminar duplicados, ordenar
-    all_ids = sorted(set(all_ids), key=int)
-
-    print(f"\n📌 Total capítulos obtenidos: {len(all_ids)}")
+    # unique & sort
+    all_ids = sorted(set(all_ids), key=lambda x: int(x))
+    logger.info("Total capítulos: %s", len(all_ids))
     return all_ids
 
-
-# -----------------------------
-# Extraer MP4 + VTT de un id de capítulo (robusto)
-# -----------------------------
+# ----------------------------
+# Extract media metadata per chapter (with cache)
+# ----------------------------
 def api_extract_media_urls(id_cap):
+    # try cache
+    cached = cache_get(id_cap)
+    if cached:
+        return cached
+
     url = "https://api.3cat.cat/pvideo/media.jsp"
     params = {"media": "video", "version": "0s", "idint": id_cap}
     try:
-        r = SESSION.get(url, params=params, timeout=15)
+        r = SESSION.get(url, params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
 
-        programa = data.get("informacio", {}).get("programa", "UnknownProgram")
-        title = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
-        capitol = data.get("informacio", {}).get("capitol", f"{id_cap}")
-
-        # MP4: puede ser lista o dict
-        files = data.get("media", {}).get("url", [])
+        info = {}
+        info["id"] = id_cap
+        info["programa"] = data.get("informacio", {}).get("programa", "UnknownProgram")
+        info["title"] = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
+        info["capitol"] = data.get("informacio", {}).get("capitol", str(id_cap))
+        info["temporada"] = data.get("informacio", {}).get("temporada") or ""
+        # normalize files
+        files = data.get("media", {}).get("url", []) or []
         if isinstance(files, dict):
             files = [files]
-        if not isinstance(files, list):
-            files = []
-
         mp4s = []
         for entry in files:
-            if not isinstance(entry, dict):
-                continue
+            if not isinstance(entry, dict): continue
             mp4 = entry.get("file")
-            label = entry.get("label") or entry.get("quality") or ""
-            if mp4 and mp4.lower().endswith(".mp4"):
-                mp4s.append((label or "mp4", mp4))
-
-        # VTT:
+            label = entry.get("label") or entry.get("quality") or entry.get("descripcio") or ""
+            if mp4 and ("mp4" in mp4.lower()):
+                mp4s.append({"label": label or "mp4", "url": mp4})
         vfiles = data.get("subtitols", []) or []
         if isinstance(vfiles, dict):
             vfiles = [vfiles]
-        if not isinstance(vfiles, list):
-            vfiles = []
-
-        subtitols = []
+        vtts = []
         for entry in vfiles:
-            if not isinstance(entry, dict):
-                continue
+            if not isinstance(entry, dict): continue
             vtt = entry.get("url")
             label = entry.get("text") or entry.get("lang") or ""
-            if vtt and vtt.lower().endswith(".vtt"):
-                subtitols.append((label or "vtt", vtt))
-
-        return {"id": id_cap, "programa": programa, "title": title, "capitol": capitol , "mp4s": mp4s, "vtts": subtitols}
+            if vtt and (".vtt" in vtt.lower() or "vtt" in vtt.lower()):
+                vtts.append({"label": label or "vtt", "url": vtt})
+        info["mp4s"] = mp4s
+        info["vtts"] = vtts
+        # store in cache
+        cache_set(id_cap, info)
+        return info
     except Exception as e:
-        logger.error("Error obtener datos id=%s : %s", id_cap, e)
+        logger.error("Error fetch media id=%s : %s", id_cap, e)
         return None
 
-# -----------------------------
-# CSV build (paralelo) con reintentos y registro de fallos
-# -----------------------------
-def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_failed=2):
-    logger.info("Generando CSV en paralelo (workers=%s)...", workers)
+# ----------------------------
+# CSV + manifest builder (parallel)
+# ----------------------------
+def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2):
+    ensure_folder("cache")
     rows = []
     failed = []
+    lock = None
 
     def worker(cid):
         attempts = 0
@@ -223,43 +234,66 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_faile
             res = api_extract_media_urls(cid)
             if res:
                 break
-            logger.warning("Reintentando extracción id=%s (intento %s)...", cid, attempts)
+            logger.warning("Retry media id=%s attempt=%s", cid, attempts)
             time.sleep(1 * attempts)
         if not res:
             failed.append(cid)
             return []
-        programa = res["programa"]
-        title = res["title"]
-        capitol = res["capitol"]
-        safe_programa = safe_filename(programa)
-        safe_title = safe_filename(title)
-        safe_name = safe_filename(f"{programa} - {title}")
-        local_rows = []
-        for label, mp4 in res["mp4s"]:
-            file_name = mp4.split("/")[-1]
-            local_rows.append([capitol, safe_programa, safe_title, safe_name, label, mp4, file_name])
-        for label, vtt in res["vtts"]:
-            file_name = vtt.split("/")[-1]
-            local_rows.append([capitol, safe_programa, safe_title, safe_name, label, vtt, file_name])
-        return local_rows
+        # build rows: one per asset (mp4 or vtt)
+        program = safe_filename(res["programa"])
+        title = safe_filename(res["title"])
+        capitol = res.get("capitol", str(res["id"]))
+        safe_name = f"{program} - {title}"
+        local = []
+        for mp in res["mp4s"]:
+            fname = mp["url"].split("/")[-1]
+            local.append([capitol, program, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
+        for vt in res["vtts"]:
+            fname = vt["url"].split("/")[-1]
+            local.append([capitol, program, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
+        return local
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(worker, cid): cid for cid in cids}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Extrayendo", unit="cap"):
-            cid = futures[future]
-            try:
-                chapter_rows = future.result()
-                rows.extend(chapter_rows)
-            except Exception as e:
-                logger.error("Error procesando capítulo %s: %s", cid, e)
-                failed.append(cid)
+        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap") as p:
+            for future in as_completed(futures):
+                cid = futures[future]
+                try:
+                    chapter_rows = future.result()
+                    rows.extend(chapter_rows)
+                except Exception as e:
+                    logger.error("Error procesando id %s: %s", cid, e)
+                    failed.append(cid)
+                p.update(1)
 
-    # Escribir CSV (ordenamos por id para tener consistencia)
-    rows_sorted = sorted(rows, key=lambda r: int(r[0]) if str(r[0]).isdigit() else 0)
+    # sort rows by capitol number (first column)
+    def safe_int(x):
+        try:
+            return int(x)
+        except:
+            return 0
+    rows_sorted = sorted(rows, key=lambda r: safe_int(r[0]))
+    # write CSV
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["Capitol", "Program", "Title", "Name", "Quality", "Link", "File Name"])
+        writer.writerow(["Capitol", "Program", "Title", "Name", "Quality", "Link", "File Name", "Type"])
         writer.writerows(rows_sorted)
+
+    # manifest JSON
+    manifest = {"generated_at": time.time(), "items": []}
+    for r in rows_sorted:
+        manifest["items"].append({
+            "capitol": r[0],
+            "program": r[1],
+            "title": r[2],
+            "name": r[3],
+            "quality": r[4],
+            "link": r[5],
+            "file_name": r[6],
+            "type": r[7]
+        })
+    with open(manifest_path, "w", encoding="utf-8") as mf:
+        json.dump(manifest, mf, ensure_ascii=False, indent=2)
 
     if failed:
         with open("errors_ids.txt", "w", encoding="utf-8") as ef:
@@ -267,49 +301,119 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_faile
                 ef.write(str(fid) + "\n")
         logger.warning("Algunos ids fallaron. Guardados en errors_ids.txt")
 
-    logger.info("CSV generado: %s (filas: %s)", output_csv, len(rows_sorted))
-    return output_csv
+    logger.info("CSV generado: %s, manifest: %s, filas: %s", output_csv, manifest_path, len(rows_sorted))
+    return output_csv, manifest_path, len(rows_sorted)
 
-# -----------------------------
-# Descarga con reintentos y barra global
-# -----------------------------
-def download_file_with_retries(link, dst_path, final_name, max_retries=4, timeout=30):
-    if os.path.exists(dst_path):
-        return dst_path
+# ----------------------------
+# Downloader (resume + per-file tqdm + global tqdm)
+# ----------------------------
+def supports_range(url):
+    try:
+        r = SESSION.head(url, timeout=10)
+        if r.status_code // 100 == 2:
+            return 'accept-ranges' in r.headers.get('accept-ranges', '').lower() or 'bytes' in r.headers.get('accept-ranges', '').lower()
+    except Exception as e:
+        logger.debug("supports_range error %s", e)
+    return False
+
+def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=True):
+    """
+    Download with resume if supported. Shows individual tqdm bar (bytes, speed, ETA).
+    """
+    ensure_folder(os.path.dirname(dst))
+    tmp = dst + ".part"
+
+    # determine existing size
+    existing = 0
+    if os.path.exists(tmp):
+        existing = os.path.getsize(tmp)
+
+    headers = {}
+    total = None
+    try:
+        # try HEAD to get length
+        h = SESSION.head(url, timeout=10)
+        h.raise_for_status()
+        total = int(h.headers.get("Content-Length", 0)) if h.headers.get("Content-Length") else None
+        accept_ranges = 'accept-ranges' in h.headers.get('accept-ranges','').lower() or 'bytes' in h.headers.get('accept-ranges','').lower()
+    except Exception:
+        accept_ranges = False
+
+    # if resume requested and server supports
+    if use_range and existing and accept_ranges:
+        headers['Range'] = f'bytes={existing}-'
+
     last_exc = None
     backoff = 1
     for attempt in range(1, max_retries+1):
         try:
-            with SESSION.get(link, stream=True, timeout=timeout) as r:
+            with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
                 r.raise_for_status()
-                ensure_folder(os.path.dirname(dst_path))
-                total = int(r.headers.get("content-length", 0))
-                with open(dst_path, "wb") as f, tqdm(
-                total=total,
-                unit="B",
-                unit_scale=True,
-                desc=final_name,
-                leave=False
-            ) as pbar:
+                # compute total for tqdm
+                content_length = r.headers.get('Content-Length')
+                if content_length:
+                    content_length = int(content_length)
+                    if headers.get('Range') and existing:
+                        total_bytes = existing + content_length
+                    else:
+                        total_bytes = existing + content_length
+                else:
+                    total_bytes = total or 0
+
+                # tqdm individual
+                with open(tmp, "ab") as f, tqdm(
+                    total=total_bytes,
+                    initial=existing,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=desc_name,
+                    leave=False,
+                    miniters=1,
+                    mininterval=0.1
+                ) as pbar:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
                             pbar.update(len(chunk))
-            return dst_path
+                # finished, rename
+                os.replace(tmp, dst)
+                return dst
         except Exception as e:
             last_exc = e
-            logger.debug("Attempt %s failed for %s: %s", attempt, link, e)
+            logger.debug("download attempt %s for %s failed: %s", attempt, url, e)
             time.sleep(backoff)
             backoff *= 2
-    logger.error("Fallo descarga %s tras %s intentos: %s", link, max_retries, last_exc)
+    logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
+    # leave tmp for resume
     return None
 
-def download_from_csv(csv_path, program_name, videos_folder="videos", subtitols_folder="subtitols", max_workers=6):
-    programa_safe = safe_filename(program_name)
-    videos_folder = os.path.join(videos_folder, programa_safe)
-    subtitols_folder = os.path.join(subtitols_folder, programa_safe)
-    ensure_folder(videos_folder)
-    ensure_folder(subtitols_folder)
+def download_with_aria2(url, dst, aria2c_bin="aria2c"):
+    """
+    Simple aria2 wrapper: spawn aria2c with appropriate args.
+    """
+    ensure_folder(os.path.dirname(dst))
+    cmd = [
+        aria2c_bin,
+        "--file-allocation=none",
+        "--max-connection-per-server=4",
+        "--split=4",
+        "--continue=true",
+        "--dir", os.path.dirname(dst),
+        "--out", os.path.basename(dst),
+        url
+    ]
+    try:
+        subprocess.check_call(cmd)
+        return dst
+    except Exception as e:
+        logger.debug("aria2 failed: %s", e)
+        return None
+
+def download_from_csv(csv_path, program_name, total_files, videos_folder="downloads", subtitols_folder="downloads", max_workers=6, use_aria2=False, resume=True):
+    program_safe = safe_filename(program_name)
+    base_folder = videos_folder
+    ensure_folder(base_folder)
 
     rows = []
     with open(csv_path, "r", encoding="utf-8") as f:
@@ -317,23 +421,41 @@ def download_from_csv(csv_path, program_name, videos_folder="videos", subtitols_
         for r in reader:
             rows.append(r)
 
-    logger.info("Iniciando descargas (%d archivos) ...", len(rows))
-    results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+    logger.info("Iniciando descargas: %s archivos", len(rows))
+
+    # prepare futures
+    with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=total_files, desc="Progreso total", unit="tarea") as pbar:
         futures = {}
         for row in rows:
             link = row["Link"].strip()
             fname = row["File Name"].strip()
-            ext = fname.split(".")[-1].lower() if "." in fname else ""
-            if ext == "mp4" or ".mp4" in link:
-                dst = os.path.join(videos_folder, f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "mp4"}')
-            else:
-                dst = os.path.join(subtitols_folder, f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "vtt"}')
-            file_name=f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "vtt"}'
-            futures[ex.submit(download_file_with_retries, link, dst, file_name)] = (row, dst)
+            type_ = row.get("Type","")
+            # build dst path: downloads/Program/Season X/
+            program = safe_filename(row["Program"])
+            season = ""  # we don't have season at CSV level; manifest could be used
+            folder = os.path.join(base_folder, program)
+            ensure_folder(folder)
+            # build filename SxxExx if possible (capitol is row[0])
+            cap = row["Capitol"]
+            # try to format SxxExx if 'capitol' numeric and we know season from cache
+            try:
+                cap_int = int(cap)
+                # basic S01E<cap> naming (could be improved)
+                final_name = f"S01E{int(cap):02d} - {row['Name']}.{fname.split('.')[-1]}"
+            except Exception:
+                final_name = f"{row['Name']}.{fname.split('.')[-1]}"
+            dst = os.path.join(folder, safe_filename(final_name))
 
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Descargando", unit="file"):
-            row, dst = futures[future]
+            desc_name = os.path.basename(dst)
+            # choose method
+            if use_aria2:
+                fut = ex.submit(download_with_aria2, link, dst)
+            else:
+                fut = ex.submit(download_chunked, link, dst, desc_name, 4, 30, resume)
+            futures[fut] = dst
+
+        for future in as_completed(futures):
+            dst = futures[future]
             try:
                 res = future.result()
                 if res:
@@ -341,60 +463,53 @@ def download_from_csv(csv_path, program_name, videos_folder="videos", subtitols_
                 else:
                     logger.warning("No guardado: %s", dst)
             except Exception as e:
-                logger.error("Error descarga fila %s : %s", row, e)
+                logger.error("Error en descarga: %s (%s)", dst, e)
+            pbar.update(1)
 
     logger.info("Descargas finalizadas.")
 
-# -----------------------------
-# MAIN
-# -----------------------------
+# ----------------------------
+# Main CLI
+# ----------------------------
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("programa", help="Nombre del programa (nombonic)")
+    parser = argparse.ArgumentParser(description="TV3 CLI - Downloader")
+    parser.add_argument("programa", help="Nombre del programa (nombonic) ej: dr-slump")
     parser.add_argument("--csv", default="links-fitxers.csv")
+    parser.add_argument("--manifest", default="manifest.json")
     parser.add_argument("--workers", type=int, default=6)
-    parser.add_argument("--skip-csv", action="store_true", help="No regenerar CSV si existe")
-    parser.add_argument("--force-csv", action="store_true", help="Forzar regeneración de CSV aunque exista")
-    parser.add_argument("--caps-per-pag", type=int, default=1000)
-    parser.add_argument("--debug", action="store_true", help="Activa logs DEBUG")
+    parser.add_argument("--pagesize", type=int, default=100)
+    parser.add_argument("--only-list", action="store_true", help="Solo generar CSV/manifest, no descargar")
+    parser.add_argument("--quality", type=str, default="", help="Filtrar calidad e.g. 720")
+    parser.add_argument("--no-vtt", action="store_true", help="No descargar subtitulos")
+    parser.add_argument("--aria2", action="store_true", help="Usar aria2c para descargas si disponible")
+    parser.add_argument("--resume", action="store_true", help="Habilitar resume con Range si es posible")
+    parser.add_argument("--debug", action="store_true", help="Activar debug logs")
     args = parser.parse_args()
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
         logging.getLogger().setLevel(logging.DEBUG)
-
-    file_handler = logging.FileHandler("tv3_cli_debug.log", encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
-    logger.addHandler(file_handler)
-
-    prog = args.programa
+        logger.debug("Debug mode on")
 
     try:
-        logger.info("Buscando programa en API...")
-        pid = obtener_program_id(prog)
-        logger.info("ID del programa: %s", pid)
-
-        logger.info("Obteniendo capítulos...")
-        cids = obtener_ids_capitulos(pid,items_pagina=args.caps_per_pag)
-        logger.info("%d capítulos encontrados.", len(cids))
-
-        if not args.skip_csv or args.force_csv or not os.path.exists(args.csv):
-            csv_path = build_links_csv(cids, output_csv=args.csv, workers=args.workers)
-        else:
-            csv_path = args.csv
-            logger.info("Usando CSV existente: %s", csv_path)
-
-        input("Revisa el CSV si quieres. Presiona ENTER para iniciar descargas...")
-
-        pname = obtener_program_name(prog)
-        download_from_csv(csv_path, pname, max_workers=args.workers)
+        info = obtener_program_info(args.programa)
+        logger.info("Programa: %s  id=%s", info.get("titol"), info.get("id"))
+        cids = obtener_ids_capitulos(info.get("id"), items_pagina=args.pagesize, workers=args.workers)
+        csv_path, manifest_path, total_files = build_links_csv(cids, output_csv=args.csv, manifest_path=args.manifest, workers=args.workers)
+        # if only list -> stop
+        if args.only_list:
+            logger.info("Solo list. CSV y manifest generados.")
+            return
+        # count total files from manifest
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        total_assets = len(manifest.get("items", []))
+        download_from_csv(csv_path, info.get("titol"), total_assets, max_workers=args.workers, use_aria2=args.aria2, resume=args.resume)
         logger.info("Proceso completado.")
-
     except KeyboardInterrupt:
         logger.warning("Interrumpido por usuario.")
     except Exception as e:
-        logger.exception("Fallo: %s", e)
+        logger.exception("Fallo general: %s", e)
 
 if __name__ == "__main__":
     main()
