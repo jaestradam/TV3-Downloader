@@ -22,6 +22,7 @@ import time
 import json
 import logging
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
@@ -253,7 +254,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(worker, cid): cid for cid in cids}
-        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap") as p:
+        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=not sys.stdout.isatty()) as p:
             for future in as_completed(futures):
                 cid = futures[future]
                 try:
@@ -363,7 +364,8 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
                     desc=desc_name,
                     leave=False,
                     miniters=1,
-                    mininterval=0.1
+                    mininterval=0.1,
+                    disable=not sys.stdout.isatty()
                 ) as pbar:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
@@ -462,7 +464,7 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
     logger.info("Tareas a ejecutar: %s", len(tasks))
 
     # Ejecutar descargas paralelas
-    with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(tasks), desc="Progreso total", unit="tarea") as pbar:
+    with ThreadPoolExecutor(max_workers=max_workers) as ex, tqdm(total=len(tasks), desc="Progreso total", unit="tarea", disable=not sys.stdout.isatty()) as pbar:
         futures = {}
         for t in tasks:
             if t["use_aria2"]:
@@ -484,6 +486,27 @@ def download_from_csv(csv_path, program_name, total_files, videos_folder="downlo
             pbar.update(1)
 
     logger.info("Descargas finalizadas.")
+
+    # ----------------------------
+    # Estadísticas finales
+    # ----------------------------
+    total_downloaded = 0
+    total_failed = 0
+    for t in tasks:
+        if os.path.exists(t["dst"]):
+            total_downloaded += 1
+        else:
+            total_failed += 1
+
+    size_bytes = sum(os.path.getsize(t["dst"]) for t in tasks if os.path.exists(t["dst"]))
+    size_mb = size_bytes / (1024*1024)
+
+    logger.info("===== Estadísticas finales =====")
+    logger.info("Total archivos intentados: %s", len(tasks))
+    logger.info("Archivos descargados correctamente: %s", total_downloaded)
+    logger.info("Archivos fallidos: %s", total_failed)
+    logger.info("Tamaño total descargado: %.2f MB", size_mb)
+    logger.info("================================")
 
 # ----------------------------
 # Main CLI
