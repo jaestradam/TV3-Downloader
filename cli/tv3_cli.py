@@ -169,6 +169,7 @@ def api_extract_media_urls(id_cap):
 
         programa = data.get("informacio", {}).get("programa", "UnknownProgram")
         title = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
+        capitol = data.get("informacio", {}).get("capitol", f"{id_cap}")
 
         # MP4: puede ser lista o dict
         files = data.get("media", {}).get("url", [])
@@ -202,7 +203,7 @@ def api_extract_media_urls(id_cap):
             if vtt and vtt.lower().endswith(".vtt"):
                 subtitols.append((label or "vtt", vtt))
 
-        return {"id": id_cap, "programa": programa, "title": title, "mp4s": mp4s, "vtts": subtitols}
+        return {"id": id_cap, "programa": programa, "title": title, "capitol": capitol , "mp4s": mp4s, "vtts": subtitols}
     except Exception as e:
         logger.error("Error obtener datos id=%s : %s", id_cap, e)
         return None
@@ -229,16 +230,17 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_faile
             return []
         programa = res["programa"]
         title = res["title"]
+        capitol = res["capitol"]
         safe_programa = safe_filename(programa)
         safe_title = safe_filename(title)
         safe_name = safe_filename(f"{programa} - {title}")
         local_rows = []
         for label, mp4 in res["mp4s"]:
             file_name = mp4.split("/")[-1]
-            local_rows.append([res["id"], safe_programa, safe_title, safe_name, label, mp4, file_name])
+            local_rows.append([capitol, safe_programa, safe_title, safe_name, label, mp4, file_name])
         for label, vtt in res["vtts"]:
             file_name = vtt.split("/")[-1]
-            local_rows.append([res["id"], safe_programa, safe_title, safe_name, label, vtt, file_name])
+            local_rows.append([capitol, safe_programa, safe_title, safe_name, label, vtt, file_name])
         return local_rows
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -256,7 +258,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_faile
     rows_sorted = sorted(rows, key=lambda r: int(r[0]) if str(r[0]).isdigit() else 0)
     with open(output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["ID", "Program", "Title", "Name", "Quality", "Link", "File Name"])
+        writer.writerow(["Capitol", "Program", "Title", "Name", "Quality", "Link", "File Name"])
         writer.writerows(rows_sorted)
 
     if failed:
@@ -271,7 +273,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", workers=8, retry_faile
 # -----------------------------
 # Descarga con reintentos y barra global
 # -----------------------------
-def download_file_with_retries(link, dst_path, max_retries=4, timeout=30):
+def download_file_with_retries(link, dst_path, final_name, max_retries=4, timeout=30):
     if os.path.exists(dst_path):
         return dst_path
     last_exc = None
@@ -281,10 +283,18 @@ def download_file_with_retries(link, dst_path, max_retries=4, timeout=30):
             with SESSION.get(link, stream=True, timeout=timeout) as r:
                 r.raise_for_status()
                 ensure_folder(os.path.dirname(dst_path))
-                with open(dst_path, "wb") as f:
+                total = int(r.headers.get("content-length", 0))
+                with open(dst_path, "wb") as f, tqdm(
+                total=total,
+                unit="B",
+                unit_scale=True,
+                desc=final_name,
+                leave=False
+            ) as pbar:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
+                            pbar.update(len(chunk))
             return dst_path
         except Exception as e:
             last_exc = e
@@ -316,10 +326,11 @@ def download_from_csv(csv_path, program_name, videos_folder="videos", subtitols_
             fname = row["File Name"].strip()
             ext = fname.split(".")[-1].lower() if "." in fname else ""
             if ext == "mp4" or ".mp4" in link:
-                dst = os.path.join(videos_folder, f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.mp4')
+                dst = os.path.join(videos_folder, f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "mp4"}')
             else:
                 dst = os.path.join(subtitols_folder, f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "vtt"}')
-            futures[ex.submit(download_file_with_retries, link, dst)] = (row, dst)
+            file_name=f'{safe_filename(row["Name"])} - {safe_filename(row["Quality"])}.{ext or "vtt"}'
+            futures[ex.submit(download_file_with_retries, link, dst, file_name)] = (row, dst)
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Descargando", unit="file"):
             row, dst = futures[future]
@@ -345,7 +356,17 @@ def main():
     parser.add_argument("--skip-csv", action="store_true", help="No regenerar CSV si existe")
     parser.add_argument("--force-csv", action="store_true", help="Forzar regeneración de CSV aunque exista")
     parser.add_argument("--caps-per-pag", type=int, default=1000)
+    parser.add_argument("--debug", action="store_true", help="Activa logs DEBUG")
     args = parser.parse_args()
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    file_handler = logging.FileHandler("tv3_cli_debug.log", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    logger.addHandler(file_handler)
 
     prog = args.programa
 
