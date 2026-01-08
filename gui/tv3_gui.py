@@ -31,6 +31,18 @@ except ImportError:
     print("Asegúrate de que tv3_cli.py está en el mismo directorio")
     sys.exit(1)
 
+import logging
+
+class QueueLogHandler(logging.Handler):
+    def __init__(self, log_queue):
+        super().__init__()
+        self.log_queue = log_queue
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.log_queue.put(("log", msg))
+
+
 # Configuración de CustomTkinter
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -47,7 +59,7 @@ class TV3_GUI(ctk.CTk):
         # Queue para comunicación entre threads
         self.log_queue = queue.Queue()
         self.progress_queue = queue.Queue()
-        self.file_progress_queue = queue.Queue()
+        self.file_progress_queue = queue.Queue(maxsize=200)
         
         # Variables
         self.program_info = None
@@ -58,6 +70,9 @@ class TV3_GUI(ctk.CTk):
         
         # Crear interfaz
         self.create_widgets()
+        # Redirigir stdout y stderr a la GUI
+        sys.stdout = StdoutRedirector(self.log_queue)
+        sys.stderr = StdoutRedirector(self.log_queue)
         
         # Iniciar actualización de logs y progreso
         self.update_logs()
@@ -79,7 +94,7 @@ class TV3_GUI(ctk.CTk):
         title_label.pack(pady=15)
         
         # ===== FRAME PRINCIPAL =====
-        main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        main_frame = ctk.CTkScrollableFrame(self, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=20, pady=20)
         
         # ===== SECCIÓN: CONFIGURACIÓN =====
@@ -142,7 +157,7 @@ class TV3_GUI(ctk.CTk):
         workers_frame.grid(row=0, column=1, sticky="ew", pady=5)
         
         ctk.CTkLabel(workers_frame, text="Workers:", width=100, anchor="w").pack(side="left")
-        self.workers_var = ctk.IntVar(value=6)
+        self.workers_var = ctk.IntVar(value=3)
         self.workers_slider = ctk.CTkSlider(
             workers_frame,
             from_=1,
@@ -152,7 +167,7 @@ class TV3_GUI(ctk.CTk):
             width=150
         )
         self.workers_slider.pack(side="left", padx=(0, 10))
-        self.workers_label = ctk.CTkLabel(workers_frame, text="6", width=30)
+        self.workers_label = ctk.CTkLabel(workers_frame, text="3", width=30)
         self.workers_label.pack(side="left")
         
         self.workers_slider.configure(command=lambda v: self.workers_label.configure(text=str(int(v))))
@@ -266,7 +281,7 @@ class TV3_GUI(ctk.CTk):
             text_color=("gray50", "gray60")
         )
         self.no_downloads_label.pack(pady=20)
-        
+
         # ===== SECCIÓN: LOGS =====
         log_frame = ctk.CTkFrame(main_frame)
         log_frame.pack(fill="both", expand=True)
@@ -284,25 +299,8 @@ class TV3_GUI(ctk.CTk):
         
         self.add_log("✅ Aplicación iniciada correctamente")
         self.add_log("💡 Introduce el nombre del programa (nombonic) y pulsa 'Buscar'")
-        
-        # ===== SECCIÓN: LOGS =====
-        log_frame = ctk.CTkFrame(main_frame)
-        log_frame.pack(fill="both", expand=True)
-        
-        log_label = ctk.CTkLabel(
-            log_frame,
-            text="📝 Registro de actividad",
-            font=ctk.CTkFont(size=16, weight="bold")
-        )
-        log_label.pack(anchor="w", padx=15, pady=(15, 10))
-        
-        # Text widget para logs
-        self.log_text = ctk.CTkTextbox(log_frame, height=200, wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        
-        self.add_log("✅ Aplicación iniciada correctamente")
-        self.add_log("💡 Introduce el nombre del programa (nombonic) y pulsa 'Buscar'")
-    
+
+
     def add_log(self, message):
         """Añadir mensaje al log"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -999,7 +997,7 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(worker, cid): cid for cid in cids}
-        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=not sys.stdout.isatty()) as p:
+        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=True) as p:
             for future in as_completed(futures):
                 cid = futures[future]
                 try:
@@ -1093,7 +1091,7 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
                     leave=False,
                     miniters=1,
                     mininterval=0.1,
-                    disable=not sys.stdout.isatty()
+                    disable=True
                 ) as pbar:
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
@@ -1159,19 +1157,31 @@ def download_chunked_with_callback(url, dst, desc_name, max_retries=4, timeout=3
                 downloaded = existing if mode == "ab" else 0
 
                 with open(tmp, mode) as f:
+                    last_update = 0.0
+                    update_interval = 0.1  # segundos (100 ms)
+
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
-                            
-                            # Actualizar progreso cada cierto número de chunks
-                            if total_bytes and progress_queue:
+
+                            now = time.time()
+                            if (
+                                total_bytes
+                                and progress_queue
+                                and (now - last_update) >= update_interval
+                            ):
                                 progress = downloaded / total_bytes
-                                progress_queue.put({
-                                    "type": "update",
-                                    "filename": filename,
-                                    "progress": progress
-                                })
+                                try:
+                                    progress_queue.put_nowait({
+                                        "type": "update",
+                                        "filename": filename,
+                                        "progress": progress
+                                    })
+                                except queue.Full:
+                                    pass
+                                last_update = now
+
 
                 os.replace(tmp, dst)
                 
@@ -1214,6 +1224,22 @@ def download_with_aria2(url, dst, aria2c_bin="aria2c"):
         logger.debug("aria2 failed: %s", e)
         return None
 
+class StdoutRedirector:
+    def __init__(self, log_queue):
+        self.log_queue = log_queue
+        handler = QueueLogHandler(self.log_queue)
+        formatter = logging.Formatter("%(levelname)s: %(message)s")
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+
+    def write(self, message):
+        if message.strip():
+            self.log_queue.put(("log", message.rstrip()))
+
+    def flush(self):
+        pass
 
 def main():
     """Función principal"""
