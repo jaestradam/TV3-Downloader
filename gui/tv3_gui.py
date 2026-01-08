@@ -273,7 +273,14 @@ class TV3_GUI(ctk.CTk):
         q_frame.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(q_frame, text="Calidad:", width=60, anchor="w").pack(side="left")
         self.quality_var = ctk.StringVar(value="Todas")
-        self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled")
+        self.quality_combo = ctk.CTkComboBox(
+            q_frame, 
+            values=["Todas"], 
+            variable=self.quality_var, 
+            width=140, 
+            state="disabled",
+            command=self.on_quality_change
+        )
         self.quality_combo.pack(side="left")
 
         # Subtitulos
@@ -281,7 +288,14 @@ class TV3_GUI(ctk.CTk):
         s_frame.grid(row=0, column=1, sticky="w", padx=20)
         ctk.CTkLabel(s_frame, text="Subtitulos:", width=80, anchor="w").pack(side="left")
         self.vttlang_var = ctk.StringVar(value="Todos")
-        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled")
+        self.vttlang_combo = ctk.CTkComboBox(
+            s_frame, 
+            values=["Todos"], 
+            variable=self.vttlang_var, 
+            width=140, 
+            state="disabled",
+            command=self.on_vttlang_change
+        )
         self.vttlang_combo.pack(side="left")
 
         # Workers
@@ -1050,6 +1064,63 @@ class TV3_GUI(ctk.CTk):
         else:
             self.vttlang_combo.configure(values=["Todos"], state="normal")
             self.add_log("⚠️ No se encontraron subtítulos específicos")
+    
+    def on_quality_change(self, choice):
+        """Aplicar filtro de calidad automáticamente"""
+        self.apply_quality_subtitle_filters()
+    
+    def on_vttlang_change(self, choice):
+        """Aplicar filtro de subtítulos automáticamente"""
+        self.apply_quality_subtitle_filters()
+    
+    def apply_quality_subtitle_filters(self):
+        """Aplicar filtros de calidad y subtítulos a la selección"""
+        if not self.all_items:
+            return
+        
+        quality_filter = self.quality_var.get()
+        vttlang_filter = self.vttlang_var.get()
+        
+        # Log de la acción
+        filters_applied = []
+        if quality_filter != "Todas":
+            filters_applied.append(f"Calidad: {quality_filter}")
+        if vttlang_filter != "Todos":
+            filters_applied.append(f"Subtítulos: {vttlang_filter}")
+        
+        if filters_applied:
+            self.add_log(f"🔧 Aplicando filtros: {', '.join(filters_applied)}")
+        
+        # Aplicar filtros a todos los items
+        for item_data in self.all_items:
+            item_type = item_data["tipo"]
+            item_quality = item_data["calidad"]
+            
+            should_select = True
+            
+            # Filtro de calidad (solo para MP4)
+            if item_type == "MP4":
+                if quality_filter == "Ninguna (No Video)":
+                    should_select = False
+                elif quality_filter != "Todas" and quality_filter not in item_quality:
+                    should_select = False
+            
+            # Filtro de subtítulos (solo para VTT)
+            if item_type == "VTT":
+                if vttlang_filter == "Ninguno (No Subs)":
+                    should_select = False
+                elif vttlang_filter != "Todos" and vttlang_filter not in item_quality:
+                    should_select = False
+            
+            # Actualizar selección
+            item_data["selected"] = should_select
+        
+        # Actualizar la vista
+        self.apply_filter()
+        
+        # Contar seleccionados
+        selected_count = sum(1 for item in self.all_items if item["selected"])
+        self.add_log(f"✓ Filtros aplicados: {selected_count} elementos seleccionados")
     
     def start_download(self):
         if not self.program_info or not self.manifest_data:
