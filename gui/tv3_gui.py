@@ -741,6 +741,8 @@ class TV3_GUI(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        self.filter_debounce_id = None
+
         # Inicializar sistema de traducciones
         self.translator = TranslationManager(default_lang="es", config_file="tv3_config.json")
         self.iconbitmap(resource_path("3catEM.ico"))
@@ -795,7 +797,7 @@ class TV3_GUI(ctk.CTk):
             popup = DownloadStatsPopup(self, stats, self.translator)
             popup.focus()
         except Exception as e:
-            logger.error(f"Error mostrando popup de estadísticas: {e}")
+            logger.error(self.translator.get("logs.error_showing_stats_popup",error=str(e)))
             # Fallback a messagebox simple
             message = "\n".join([
                 self.translator.get("stats.fb_completed",completed=stats['completed']),
@@ -1068,7 +1070,8 @@ class TV3_GUI(ctk.CTk):
         ctk.CTkLabel(filter_frame, text=self.translator.get("preview.filter_label"), width=60, anchor="w").pack(side="left", padx=(0, 5))
         self.filter_entry = ctk.CTkEntry(filter_frame, placeholder_text=self.translator.get("preview.filter_placeholder"))
         self.filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
+ #jaem       self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
+        self.filter_entry.bind("<KeyRelease>", self.on_filter_change)
     
         self.btn_clear_filter = ctk.CTkButton(filter_frame, text=self.translator.get("preview.clear_filter"), width=80, command=self.clear_filter).pack(side="left", padx=5)
     
@@ -1255,7 +1258,7 @@ class TV3_GUI(ctk.CTk):
         if lang_code and lang_code != self.translator.current_lang:
             # Cambiar idioma y guardarlo automáticamente
             self.translator.set_language(lang_code, save=True)
-            self.add_log(f"🌐 {self.translator.get('messages.language_changed', lang=selection)}")
+            self.add_log(self.translator.get('messages.language_changed', lang=selection))
             
             # Mostrar advertencia sobre pestañas y sugerencia de reinicio
             restart = messagebox.askyesno(
@@ -1313,7 +1316,7 @@ class TV3_GUI(ctk.CTk):
             # ... más mapeos
         }
         
-        self.add_log("⚠️ Las pestañas han sido recreadas. Puede que se haya perdido información.")
+        self.add_log(self.translator.get("logs.info_recreate_tabs"))
     
     def refresh_ui_texts(self):
         """Actualizar todos los textos de la UI con el nuevo idioma"""
@@ -1445,7 +1448,7 @@ class TV3_GUI(ctk.CTk):
             # Lanzar nuevo proceso
             subprocess.Popen([python] + args)
         except Exception as e:
-            logger.error(f"Error al reiniciar la aplicación: {e}")
+            logger.error(self.translator.get("logs.error_restarting_app",error=str(e)))
         finally:
             # Cerrar app actual
             self.destroy()
@@ -1510,6 +1513,13 @@ class TV3_GUI(ctk.CTk):
         
         self.add_log(self.translator.get("messages.items_loaded",count=len(items)))
     
+    def on_filter_change(self, event=None):
+        """Debounce para filtro (300ms)"""
+        if self.filter_debounce_id:
+            self.after_cancel(self.filter_debounce_id)
+    
+        self.filter_debounce_id = self.after(300, self.apply_filter)
+
     def apply_filter(self):
         """Aplicar filtro de búsqueda a la tabla"""
         # Limpiar tabla
@@ -1658,14 +1668,14 @@ class TV3_GUI(ctk.CTk):
                         
                         processed += 1
                         if processed % 10 == 0:
-                            self.log_queue.put(("log", f"📏 Procesados {processed}/{total} archivos..."))
+                            self.log_queue.put(("log", self.translator.get("logs.info_files_processed",processed=processed,total=total)))
                         
                         return True
                     except Exception as e:
                         item_data["tamaño"] = "Error"
                         item_data["tamaño_bytes"] = 0
                         processed += 1
-                        logger.debug(f"Error obteniendo tamaño de {url}: {e}")
+                        logger.debug(self.translator.get("logs.error_fetching_size",url=url,error=str(e)))
                         return False
                 
                 # Usar ThreadPoolExecutor para paralelizar
@@ -1683,15 +1693,15 @@ class TV3_GUI(ctk.CTk):
                     item["tamaño_bytes"] for item in self.all_items if item["selected"]
                 )
                 
-                self.log_queue.put(("log", f"✅ Tamaños obtenidos: Total {format_size(total_bytes)}"))
-                self.log_queue.put(("log", f"📦 Seleccionados: {format_size(total_selected_bytes)}"))
+                self.log_queue.put(("log", self.translator.get("logs.info_fetching_size",total_bytes=format_size(total_bytes))))
+                self.log_queue.put(("log", self.translator.get("logs.info_selected_size",total_selected_bytes=format_size(total_selected_bytes))))
                 
                 # Actualizar tabla
                 self.after(0, self.apply_filter)
                 self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text=self.translator.get("preview.fetch_sizes")))
                 
             except Exception as e:
-                self.log_queue.put(("log", f"❌ Error obteniendo tamaños: {str(e)}"))
+                self.log_queue.put(("log", self.translator.get("logs.error_fetching_sizes",error=str(e))))
                 self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text=self.translator.get("preview.fetch_sizes")))
         
         threading.Thread(target=fetch_thread, daemon=True).start()
@@ -1855,7 +1865,7 @@ class TV3_GUI(ctk.CTk):
             self.remove_active_download(filename)
     
     def browse_folder(self):
-        folder = filedialog.askdirectory(title="Seleccionar carpeta de descarga")
+        folder = filedialog.askdirectory(title=self.translator.get("messages.select_folder"))
         if folder:
             self.output_entry.delete(0, "end")
             self.output_entry.insert(0, folder)
@@ -1880,7 +1890,7 @@ class TV3_GUI(ctk.CTk):
 
         self.search_btn.configure(text=self.translator.get("config.searching_btn"))
 
-        self.add_log(f"🔍 Buscando programa: {program_name}")
+        self.add_log(self.translator.get("messages.searching_program"))
         self.progress_info.configure(text=self.translator.get("progress.searching"))
         self.info_label.configure(
             text=self.translator.get("messages.searching"), 
@@ -1895,21 +1905,32 @@ class TV3_GUI(ctk.CTk):
         def search_thread():
             try:
                 # Obtener info del programa
-                info = obtener_program_info(program_name)
+                info = obtener_program_info(program_name, self.translator)
+
+                if info is None:
+                    # Usar traducción aquí donde self.translator está disponible
+                    self.log_queue.put(("log", self.translator.get("messages.program_not_found_name", nombonic=program_name)))
+                    self.after(0, lambda: self.info_label.configure(
+                        text=self.translator.get("messages.program_not_found"), 
+                        text_color=("red", "lightcoral")
+                    ))
+                    self.progress_queue.put({"type": "error", "text": error_msg})
+                    return
+
                 self.program_info = info
                 self.log_queue.put(("log", self.translator.get("messages.program_found",title=info.get('titol'))))
-                self.log_queue.put(("log", f"📺 ID: {info.get('id')}"))
+                self.log_queue.put(("log", self.translator.get("logs.program_id",id=info.get('id'))))
                 
                 # Generar manifest automáticamente
-                self.log_queue.put(("log", "📄 Obteniendo capítulos y generando manifest..."))
+                self.log_queue.put(("log", self.translator.get("logs.info_getting_episodes")))
                 program_id = info.get("id")
                 workers = self.workers_var.get()
                 
                 cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
-                self.log_queue.put(("log", f"📊 Total capítulos encontrados: {len(cids)}"))
+                self.log_queue.put(("log", self.translator.get("logs.info_total_episodes",total=len(cids))))
                 
                 manifest_path = "manifest.json"
-                self.manifest_data = build_manifest(cids, manifest_path, workers=workers)
+                self.manifest_data = build_manifest(cids, self.translator, manifest_path, workers=workers)
 
                 diffitems = self.manifest_data.get("items", [])
                 video=0
@@ -1941,9 +1962,9 @@ class TV3_GUI(ctk.CTk):
                 self.manifest_data = None
                 self.after(0, lambda: self.info_label.configure(text=self.translator.get("messages.program_not_found"), text_color=("red", "lightcoral")))
                 self.progress_queue.put({"type": "error", "text": str(e)})
-                self.after(0, lambda: self.search_btn.configure(text=self.translator.get("config.search_btn")))
             finally:
                 self.after(0, self.enable_controls)
+                self.after(0, lambda: self.search_btn.configure(text=self.translator.get("config.search_btn")))
         
         threading.Thread(target=search_thread, daemon=True).start()
     
@@ -1963,7 +1984,7 @@ class TV3_GUI(ctk.CTk):
             self.available_qualities = qualities
             self.after(0, self.update_quality_selector, qualities)
         except Exception as e:
-            self.log_queue.put(("log", f"⚠️ No se pudieron extraer las calidades: {str(e)}"))
+            self.log_queue.put(("log", self.translator.get("logs.error_fetching_quality",error=str(e))))
     
     def update_quality_selector(self, qualities):
         if qualities:
@@ -1990,7 +2011,7 @@ class TV3_GUI(ctk.CTk):
             self.add_log(f"🎬 {self.translator.get('messages.qualities_available', qualities=', '.join(sorted_qualities))}")
         else:
             self.quality_combo.configure(values=[self.translator.get("config.all_quality")], state="normal")
-            self.add_log("⚠️ No se encontraron calidades específicas")
+            self.add_log(self.translator.get("logs.error_quality_not_found"))
 
     def extract_available_vttlangs(self):
         """Extraer idiomas de subtítulos disponibles"""
@@ -2008,7 +2029,7 @@ class TV3_GUI(ctk.CTk):
             self.available_vttlangs = vttlangs
             self.after(0, self.update_vttlang_selector, vttlangs)
         except Exception as e:
-            self.log_queue.put(("log", f"⚠️ No se pudieron extraer los idiomas: {str(e)}"))
+            self.log_queue.put(("log", self.translator.get("logs.error_fetching_subs",error=str(e))))
     
     def update_vttlang_selector(self, vttlangs):
         """Actualizar selector de idiomas de subtítulos con las opciones disponibles"""
@@ -2031,7 +2052,7 @@ class TV3_GUI(ctk.CTk):
             self.add_log(f"🎬 {self.translator.get('messages.subtitles_available', langs=', '.join(sorted_vttlangs))}")
         else:
             self.vttlang_combo.configure(values=[self.translator.get("config.all_subs")], state="normal")
-            self.add_log("⚠️ No se encontraron subtítulos específicos")
+            self.add_log(self.translator.get("logs.error_subs_not_found"))
 
     def on_quality_change(self, choice):
         """Callback cuando cambia la selección de calidad"""
@@ -2083,7 +2104,7 @@ class TV3_GUI(ctk.CTk):
                 filters_applied.append(f"{self.translator.get('config.subtitles_label')} {vttlang_filter}")
     
         if filters_applied:
-            self.add_log(f"🔧 {self.translator.get('messages.filters_applied', filters=', '.join(filters_applied))}")
+            self.add_log(self.translator.get('messages.filters_applied', filters=', '.join(filters_applied)))
         
         # Aplicar filtros a todos los items
         for item_data in self.all_items:
@@ -2346,15 +2367,15 @@ def cache_get(id_):
             return None
     return None
 
-def cache_set(id_, data):
+def cache_set(id_, data, translator=None):
     path = os.path.join(CACHE_DIR, f"{id_}.json")
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.debug("Cache write failed %s: %s", path, e)
+        logger.debug(self.translator.get("logs.error_cache_set",path,str(e)))
 
-def obtener_program_info(nombonic):
+def obtener_program_info(nombonic,translator=None):
     data = fetch_json("https://api.3cat.cat/programestv")
     try:
         lletra = data["resposta"]["items"]["lletra"]
@@ -2371,8 +2392,12 @@ def obtener_program_info(nombonic):
             if isinstance(p, dict) and p.get("nombonic") == nombonic:
                 return {"id": p.get("id"), "titol": p.get("titol"), "nombonic": p.get("nombonic")}
     except Exception as e:
-        logger.debug("Error parsing programestv: %s", e)
-    raise RuntimeError(self.translator.get("messages.program_not_found_name",nombonic=nombonic))
+        if translator:
+            msg = translator.get("logs.error_parsing_program", error=str(e))
+        else:
+            msg = f"Error parsing programestv: {e}"
+        logger.debug(msg)
+    return None
 
 def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
     params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": 1}
@@ -2408,7 +2433,7 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
                 pass
     return [{"id": id, "tcap": tcap} for id, tcap in zip(all_ids, all_tcaps)]
 
-def api_extract_media_urls(id_cap):
+def api_extract_media_urls(id_cap,translator=None):
     cached = cache_get(id_cap)
     if cached:
         return cached
@@ -2448,12 +2473,13 @@ def api_extract_media_urls(id_cap):
                 vtts.append({"label": label or "vtt", "url": vtt})
         info["mp4s"] = mp4s
         info["vtts"] = vtts
-        cache_set(id_cap, info)
+        cache_set(id_cap, info, translator)
         return info
     except Exception as e:
+        logger.debug("logs.error_extracting_media_url",id=id_cap,error=str(e))
         return None
 
-def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=2):
+def build_manifest(cids,translator=None,manifest_path="manifest.json", workers=8, retry_failed=2,):
     """Genera el manifest sin crear CSV"""
     ensure_folder("cache")
     failed = []
@@ -2463,7 +2489,7 @@ def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=
         attempts = 0
         while attempts <= retry_failed:
             attempts += 1
-            res = api_extract_media_urls(cid["id"])
+            res = api_extract_media_urls(cid["id"],translator)
             if res:
                 break
             time.sleep(1 * attempts)
