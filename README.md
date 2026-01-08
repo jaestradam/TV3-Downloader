@@ -20,3 +20,10 @@ cd tv3-downloader
 ## 🚀 README.md con documentación específica de cada modalidad dentro de cada carpeta
 +    [CLI](cli)
 +    GUI
+
+---
+## ⚖️ Licencia y Aviso Legal
+
+Este proyecto está bajo la **Licencia MIT**. 
+
+**IMPORTANTE:** Este script ha sido creado exclusivamente con fines educativos, de investigación y para facilitar la interoperabilidad personal. El autor no fomenta, ni se hace responsable del uso de esta herramienta para la descarga de contenido protegido por derechos de autor que infrinja los Términos de Servicio de la plataforma 3Cat/CCMA. El uso de este software es responsabilidad única y exclusiva del usuario final.

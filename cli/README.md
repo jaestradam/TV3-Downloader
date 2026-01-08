@@ -57,3 +57,10 @@ El script organiza los archivos de forma inteligente:
 +    Videos: [Output]/Nombre Programa/Nombre Programa - 1x01 - Titulo.mp4
 +    Subtítulos: [Output]/Nombre Programa/Nombre Programa - 1x01 - Titulo.vtt
 +    Metadata: Se crea una carpeta cache/ con las respuestas de la API para acelerar futuras ejecuciones.
+
+---
+## ⚖️ Licencia y Aviso Legal
+
+Este proyecto está bajo la **Licencia MIT**. 
+
+**IMPORTANTE:** Este script ha sido creado exclusivamente con fines educativos, de investigación y para facilitar la interoperabilidad personal. El autor no fomenta, ni se hace responsable del uso de esta herramienta para la descarga de contenido protegido por derechos de autor que infrinja los Términos de Servicio de la plataforma 3Cat/CCMA. El uso de este software es responsabilidad única y exclusiva del usuario final.
