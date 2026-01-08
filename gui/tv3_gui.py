@@ -47,12 +47,14 @@ class TV3_GUI(ctk.CTk):
         # Queue para comunicación entre threads
         self.log_queue = queue.Queue()
         self.progress_queue = queue.Queue()
+        self.file_progress_queue = queue.Queue()
         
         # Variables
         self.program_info = None
         self.is_downloading = False
         self.download_thread = None
         self.available_qualities = set()
+        self.active_downloads = {}  # {filename: progress_bar_widget}
         
         # Crear interfaz
         self.create_widgets()
@@ -60,6 +62,7 @@ class TV3_GUI(ctk.CTk):
         # Iniciar actualización de logs y progreso
         self.update_logs()
         self.update_progress()
+        self.update_file_progress()
         
     def create_widgets(self):
         """Crear todos los widgets de la interfaz"""
@@ -223,18 +226,46 @@ class TV3_GUI(ctk.CTk):
         )
         progress_label.pack(anchor="w", padx=15, pady=(15, 10))
         
-        # Barra de progreso
+        # Barra de progreso global
         self.progress_bar = ctk.CTkProgressBar(progress_frame)
         self.progress_bar.pack(fill="x", padx=15, pady=5)
         self.progress_bar.set(0)
         
-        # Info de progreso
+        # Info de progreso global
         self.progress_info = ctk.CTkLabel(
             progress_frame,
             text="Estado: Esperando...",
             anchor="w"
         )
-        self.progress_info.pack(fill="x", padx=15, pady=(5, 15))
+        self.progress_info.pack(fill="x", padx=15, pady=(5, 10))
+        
+        # Separador
+        separator = ctk.CTkFrame(progress_frame, height=2, fg_color=("gray70", "gray30"))
+        separator.pack(fill="x", padx=15, pady=5)
+        
+        # Label para descargas activas
+        active_label = ctk.CTkLabel(
+            progress_frame,
+            text="⚡ Descargas activas",
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        active_label.pack(anchor="w", padx=15, pady=(10, 5))
+        
+        # Frame scrollable para barras de progreso individuales
+        self.downloads_frame = ctk.CTkScrollableFrame(
+            progress_frame,
+            height=120,
+            fg_color=("gray95", "gray15")
+        )
+        self.downloads_frame.pack(fill="x", padx=15, pady=(0, 15))
+        
+        # Placeholder cuando no hay descargas
+        self.no_downloads_label = ctk.CTkLabel(
+            self.downloads_frame,
+            text="No hay descargas activas",
+            text_color=("gray50", "gray60")
+        )
+        self.no_downloads_label.pack(pady=20)
         
         # ===== SECCIÓN: LOGS =====
         log_frame = ctk.CTkFrame(main_frame)
@@ -289,17 +320,108 @@ class TV3_GUI(ctk.CTk):
                     self.progress_bar.set(1.0)
                     self.progress_info.configure(text="✅ Proceso completado")
                     self.is_downloading = False
+                    self.clear_active_downloads()
                     self.enable_controls()
                 
                 elif progress_data["type"] == "error":
                     self.progress_info.configure(text=f"❌ Error: {progress_data['text']}")
                     self.is_downloading = False
+                    self.clear_active_downloads()
                     self.enable_controls()
         
         except queue.Empty:
             pass
         
         self.after(100, self.update_progress)
+    
+    def update_file_progress(self):
+        """Actualizar barras de progreso individuales de archivos"""
+        try:
+            while True:
+                file_data = self.file_progress_queue.get_nowait()
+                
+                if file_data["type"] == "start":
+                    # Iniciar nueva descarga
+                    filename = file_data["filename"]
+                    self.add_active_download(filename)
+                
+                elif file_data["type"] == "update":
+                    # Actualizar progreso de descarga
+                    filename = file_data["filename"]
+                    progress = file_data["progress"]
+                    self.update_active_download(filename, progress)
+                
+                elif file_data["type"] == "complete":
+                    # Completar descarga
+                    filename = file_data["filename"]
+                    self.remove_active_download(filename)
+                
+                elif file_data["type"] == "error":
+                    # Error en descarga
+                    filename = file_data["filename"]
+                    self.remove_active_download(filename, error=True)
+        
+        except queue.Empty:
+            pass
+        
+        self.after(50, self.update_file_progress)
+    
+    def add_active_download(self, filename):
+        """Añadir una nueva barra de progreso para un archivo"""
+        if filename in self.active_downloads:
+            return
+        
+        # Ocultar placeholder si existe
+        if self.no_downloads_label.winfo_exists():
+            self.no_downloads_label.pack_forget()
+        
+        # Crear frame para este archivo
+        file_frame = ctk.CTkFrame(self.downloads_frame, fg_color="transparent")
+        file_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Label con nombre del archivo (truncado si es muy largo)
+        display_name = filename if len(filename) <= 50 else filename[:47] + "..."
+        name_label = ctk.CTkLabel(
+            file_frame,
+            text=f"📥 {display_name}",
+            anchor="w",
+            font=ctk.CTkFont(size=11)
+        )
+        name_label.pack(fill="x")
+        
+        # Barra de progreso
+        progress_bar = ctk.CTkProgressBar(file_frame, height=8)
+        progress_bar.pack(fill="x", pady=(2, 0))
+        progress_bar.set(0)
+        
+        # Guardar referencias
+        self.active_downloads[filename] = {
+            "frame": file_frame,
+            "label": name_label,
+            "bar": progress_bar
+        }
+    
+    def update_active_download(self, filename, progress):
+        """Actualizar el progreso de un archivo específico"""
+        if filename in self.active_downloads:
+            bar = self.active_downloads[filename]["bar"]
+            bar.set(progress)
+    
+    def remove_active_download(self, filename, error=False):
+        """Eliminar la barra de progreso de un archivo completado"""
+        if filename in self.active_downloads:
+            frame = self.active_downloads[filename]["frame"]
+            frame.destroy()
+            del self.active_downloads[filename]
+        
+        # Mostrar placeholder si no hay más descargas
+        if len(self.active_downloads) == 0:
+            self.no_downloads_label.pack(pady=20)
+    
+    def clear_active_downloads(self):
+        """Limpiar todas las barras de progreso activas"""
+        for filename in list(self.active_downloads.keys()):
+            self.remove_active_download(filename)
     
     def browse_folder(self):
         """Abrir diálogo para seleccionar carpeta"""
@@ -561,18 +683,33 @@ class TV3_GUI(ctk.CTk):
                 if t["use_aria2"]:
                     fut = ex.submit(download_with_aria2, t["link"], t["dst"])
                 else:
-                    fut = ex.submit(download_chunked, t["link"], t["dst"], t["desc"], 4, 30, not resume)
-                futures[fut] = t["dst"]
+                    fut = ex.submit(
+                        download_chunked_with_callback,
+                        t["link"],
+                        t["dst"],
+                        t["desc"],
+                        4,
+                        30,
+                        not resume,
+                        self.file_progress_queue
+                    )
+                futures[fut] = t
 
             for future in as_completed(futures):
-                dst = futures[future]
+                task = futures[future]
+                dst = task["dst"]
+                filename = task["desc"]
+                
                 try:
                     res = future.result()
                     if res:
                         logger.debug("Guardado: %s", res)
                         completed_tasks += 1
                         
-                        # Actualizar progreso en GUI
+                        # Log en tiempo real
+                        self.log_queue.put(("log", f"✅ Descargado: {filename}"))
+                        
+                        # Actualizar progreso global en GUI
                         progress_value = completed_tasks / total_tasks
                         self.progress_queue.put({
                             "type": "progress",
@@ -582,16 +719,12 @@ class TV3_GUI(ctk.CTk):
                             "type": "info",
                             "text": f"Descargando: {completed_tasks}/{total_tasks} archivos ({int(progress_value * 100)}%)"
                         })
-                        
-                        # Log cada 5 archivos o al completar
-                        if completed_tasks % 5 == 0 or completed_tasks == total_tasks:
-                            self.log_queue.put(("log", f"📥 Progreso: {completed_tasks}/{total_tasks} archivos descargados"))
                     else:
                         logger.warning("No guardado: %s", dst)
-                        self.log_queue.put(("log", f"⚠️ Fallo al descargar: {os.path.basename(dst)}"))
+                        self.log_queue.put(("log", f"⚠️ Fallo al descargar: {filename}"))
                 except Exception as e:
                     logger.error("Error en descarga: %s (%s)", dst, e)
-                    self.log_queue.put(("log", f"❌ Error: {os.path.basename(dst)} - {str(e)}"))
+                    self.log_queue.put(("log", f"❌ Error: {filename} - {str(e)}"))
 
         logger.info("Descargas finalizadas.")
 
@@ -959,6 +1092,89 @@ def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=T
             backoff *= 2
 
     logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
+    return None
+
+def download_chunked_with_callback(url, dst, desc_name, max_retries=4, timeout=30, use_range=True, progress_queue=None):
+    """Versión de download_chunked que reporta progreso a la GUI"""
+    ensure_folder(os.path.dirname(dst))
+    tmp = dst + ".part"
+    existing = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+    headers = {}
+    
+    filename = os.path.basename(dst)
+
+    if use_range and existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+
+    backoff = 1
+    last_exc = None
+    
+    # Notificar inicio de descarga
+    if progress_queue:
+        progress_queue.put({"type": "start", "filename": filename})
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
+                if "Range" in headers:
+                    if r.status_code == 206:
+                        mode = "ab"
+                    elif r.status_code == 416:
+                        os.replace(tmp, dst)
+                        if progress_queue:
+                            progress_queue.put({"type": "complete", "filename": filename})
+                        return dst
+                    else:
+                        logger.warning("Servidor ignoró Range para %s, reiniciando descarga", dst)
+                        existing = 0
+                        headers.pop("Range", None)
+                        mode = "wb"
+                else:
+                    mode = "wb"
+
+                r.raise_for_status()
+
+                total = r.headers.get("Content-Length")
+                total = int(total) if total else None
+                total_bytes = (existing + total) if total and mode == "ab" else total
+                
+                downloaded = existing if mode == "ab" else 0
+
+                with open(tmp, mode) as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            
+                            # Actualizar progreso cada cierto número de chunks
+                            if total_bytes and progress_queue:
+                                progress = downloaded / total_bytes
+                                progress_queue.put({
+                                    "type": "update",
+                                    "filename": filename,
+                                    "progress": progress
+                                })
+
+                os.replace(tmp, dst)
+                
+                # Notificar completado
+                if progress_queue:
+                    progress_queue.put({"type": "complete", "filename": filename})
+                
+                return dst
+
+        except Exception as e:
+            last_exc = e
+            logger.debug("download attempt %s failed for %s: %s", attempt, url, e)
+            time.sleep(backoff)
+            backoff *= 2
+
+    logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
+    
+    # Notificar error
+    if progress_queue:
+        progress_queue.put({"type": "error", "filename": filename})
+    
     return None
 
 def download_with_aria2(url, dst, aria2c_bin="aria2c"):
