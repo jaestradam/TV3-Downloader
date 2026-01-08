@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """
 tv3_gui.py - Interfaz gráfica para TV3 GUI Downloader
-Requiere: customtkinter, pillow
+Requiere: customtkinter, pillow (además de las dependencias del script original)
 Instalación: pip install customtkinter pillow
-
-Comunicación con tv3_cli.py mediante subprocess (CLI)
 """
 
 import customtkinter as ctk
@@ -12,15 +10,43 @@ from tkinter import filedialog, messagebox
 import threading
 import queue
 import sys
+import re
+import time
 import os
 from datetime import datetime
 import json
-import subprocess
-import re
+import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+
+# Importar el script original (asumiendo que está en el mismo directorio)
+try:
+    from tv3_cli import (
+        logger,
+        SESSION
+    )
+except ImportError:
+    print("Error: No se puede importar tv3_cli.py")
+    print("Asegúrate de que tv3_cli.py está en el mismo directorio")
+    sys.exit(1)
 
 # Configuración de CustomTkinter
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+class LogHandler:
+    """Manejador de logs para capturar y mostrar en la GUI"""
+    def __init__(self, text_widget, log_queue):
+        self.text_widget = text_widget
+        self.log_queue = log_queue
+    
+    def write(self, message):
+        if message.strip():
+            self.log_queue.put(("log", message))
+    
+    def flush(self):
+        pass
 
 
 class TV3_GUI(ctk.CTk):
@@ -37,19 +63,9 @@ class TV3_GUI(ctk.CTk):
         
         # Variables
         self.program_info = None
-        self.is_processing = False
-        self.process_thread = None
-        self.available_qualities = set()
-        self.current_process = None
-        
-        # Verificar que tv3_cli.py existe
-        if not os.path.exists("tv3_cli.py"):
-            messagebox.showerror(
-                "Error",
-                "No se encuentra tv3_cli.py en el directorio actual.\n"
-                "Asegúrate de que ambos archivos están en el mismo directorio."
-            )
-            sys.exit(1)
+        self.is_downloading = False
+        self.download_thread = None
+        self.available_qualities = set()  # Para almacenar calidades disponibles
         
         # Crear interfaz
         self.create_widgets()
@@ -127,7 +143,7 @@ class TV3_GUI(ctk.CTk):
             values=["Todas"],
             variable=self.quality_var,
             width=150,
-            state="disabled"
+            state="disabled"  # Deshabilitado hasta que se genere la lista
         )
         self.quality_combo.pack(side="left")
         
@@ -285,12 +301,12 @@ class TV3_GUI(ctk.CTk):
                 elif progress_data["type"] == "complete":
                     self.progress_bar.set(1.0)
                     self.progress_info.configure(text="✅ Proceso completado")
-                    self.is_processing = False
+                    self.is_downloading = False
                     self.enable_controls()
                 
                 elif progress_data["type"] == "error":
                     self.progress_info.configure(text=f"❌ Error: {progress_data['text']}")
-                    self.is_processing = False
+                    self.is_downloading = False
                     self.enable_controls()
         
         except queue.Empty:
@@ -319,18 +335,6 @@ class TV3_GUI(ctk.CTk):
         self.download_btn.configure(state="normal")
         self.program_entry.configure(state="normal")
     
-    def run_tv3_command(self, args):
-        """Ejecutar comando tv3_cli.py mediante subprocess"""
-        cmd = [sys.executable, "tv3_cli.py"] + args
-        return subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-    
     def search_program(self):
         """Buscar información del programa"""
         program_name = self.program_entry.get().strip()
@@ -344,53 +348,25 @@ class TV3_GUI(ctk.CTk):
         
         def search_thread():
             try:
-                # Ejecutar con --only-list para solo validar el programa
-                process = self.run_tv3_command([program_name, "--only-list"])
+                info = obtener_program_info(program_name)
+                self.program_info = info
                 
-                program_found = False
-                program_id = None
-                program_title = None
+                self.log_queue.put(("log", f"✅ Programa encontrado: {info.get('titol')}"))
+                self.log_queue.put(("log", f"📺 ID: {info.get('id')}"))
                 
-                for line in process.stdout:
-                    line = line.strip()
-                    if line:
-                        self.log_queue.put(("log", line))
-                        
-                        # Buscar info del programa en la salida
-                        if "Programa:" in line:
-                            # Formato: "Programa: Título  id=123"
-                            match = re.search(r'Programa:\s*(.+?)\s+id=(\d+)', line)
-                            if match:
-                                program_title = match.group(1).strip()
-                                program_id = match.group(2).strip()
-                                program_found = True
-                
-                process.wait()
-                
-                if program_found and program_id:
-                    self.program_info = {
-                        "id": program_id,
-                        "titol": program_title,
-                        "nombonic": program_name
-                    }
-                    
-                    self.log_queue.put(("log", f"✅ Programa encontrado: {program_title}"))
-                    
-                    self.after(0, lambda: self.info_label.configure(
-                        text=f"📺 {program_title} (ID: {program_id})",
-                        text_color=("green", "lightgreen")
-                    ))
-                else:
-                    self.log_queue.put(("log", "❌ Programa no encontrado"))
-                    self.program_info = None
-                    self.after(0, lambda: self.info_label.configure(
-                        text="❌ Programa no encontrado",
-                        text_color=("red", "lightcoral")
-                    ))
+                # Actualizar label de info
+                self.after(0, lambda: self.info_label.configure(
+                    text=f"📺 {info.get('titol')} (ID: {info.get('id')})",
+                    text_color=("green", "lightgreen")
+                ))
                 
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error: {str(e)}"))
                 self.program_info = None
+                self.after(0, lambda: self.info_label.configure(
+                    text="❌ Programa no encontrado",
+                    text_color=("red", "lightcoral")
+                ))
             finally:
                 self.after(0, self.enable_controls)
         
@@ -405,66 +381,42 @@ class TV3_GUI(ctk.CTk):
         self.disable_controls()
         self.add_log("📋 Generando lista de capítulos...")
         self.progress_info.configure(text="Estado: Extrayendo capítulos...")
-        self.progress_bar.set(0)
         
         def generate_thread():
             try:
-                program_name = self.program_info.get("nombonic")
-                workers = str(self.workers_var.get())
+                program_id = self.program_info.get("id")
+                workers = self.workers_var.get()
                 quality = self.quality_var.get()
+                include_vtt = self.vtt_var.get()
                 
-                # Construir argumentos
-                args = [
-                    program_name,
-                    "--only-list",
-                    "--workers", workers
-                ]
+                quality_filter = "" if quality == "Todas" else quality
                 
-                if quality != "Todas":
-                    args.extend(["--quality", quality])
+                self.log_queue.put(("log", "🔄 Obteniendo IDs de capítulos..."))
+                cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
                 
-                if not self.vtt_var.get():
-                    args.append("--no-vtt")
+                self.log_queue.put(("log", f"📊 Total capítulos encontrados: {len(cids)}"))
+                self.log_queue.put(("log", "📝 Extrayendo metadatos..."))
                 
-                # Ejecutar proceso
-                process = self.run_tv3_command(args)
+                csv_path, manifest_path, total = build_links_csv(
+                    cids,
+                    output_csv="links-fitxers.csv",
+                    manifest_path="manifest.json",
+                    workers=workers,
+                    include_vtt=include_vtt,
+                    quality_filter=quality_filter
+                )
                 
-                total_chapters = 0
-                total_files = 0
+                self.log_queue.put(("log", f"✅ CSV generado: {csv_path}"))
+                self.log_queue.put(("log", f"✅ Manifest generado: {manifest_path}"))
+                self.log_queue.put(("log", f"📊 Total archivos: {total}"))
                 
-                for line in process.stdout:
-                    line = line.strip()
-                    if line:
-                        self.log_queue.put(("log", line))
-                        
-                        # Detectar progreso
-                        if "Total capítulos:" in line or "Total capítulos encontrados:" in line:
-                            match = re.search(r'(\d+)', line)
-                            if match:
-                                total_chapters = int(match.group(1))
-                        
-                        if "CSV generado:" in line or "filas:" in line:
-                            match = re.search(r'filas:\s*(\d+)', line)
-                            if match:
-                                total_files = int(match.group(1))
+                # Extraer calidades disponibles del manifest
+                self.extract_available_qualities(manifest_path)
                 
-                process.wait()
-                
-                if process.returncode == 0:
-                    self.log_queue.put(("log", "✅ Lista generada correctamente"))
-                    self.progress_queue.put({
-                        "type": "info",
-                        "text": f"✅ Lista generada: {total_files} archivos"
-                    })
-                    
-                    # Extraer calidades disponibles
-                    self.extract_available_qualities("manifest.json")
-                else:
-                    self.log_queue.put(("log", "❌ Error generando lista"))
-                    self.progress_queue.put({"type": "error", "text": "Error generando lista"})
+                self.progress_queue.put({"type": "info", "text": f"✅ Lista generada: {total} archivos"})
                 
             except Exception as e:
-                self.log_queue.put(("log", f"❌ Error: {str(e)}"))
+                self.log_queue.put(("log", f"❌ Error generando lista: {str(e)}"))
                 self.progress_queue.put({"type": "error", "text": str(e)})
             finally:
                 self.after(0, self.enable_controls)
@@ -474,9 +426,6 @@ class TV3_GUI(ctk.CTk):
     def extract_available_qualities(self, manifest_path):
         """Extraer calidades disponibles del manifest y actualizar el combobox"""
         try:
-            if not os.path.exists(manifest_path):
-                return
-            
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
             
@@ -488,6 +437,8 @@ class TV3_GUI(ctk.CTk):
                         qualities.add(quality)
             
             self.available_qualities = qualities
+            
+            # Actualizar el combobox en el hilo principal
             self.after(0, self.update_quality_selector, qualities)
             
         except Exception as e:
@@ -496,6 +447,7 @@ class TV3_GUI(ctk.CTk):
     def update_quality_selector(self, qualities):
         """Actualizar el selector de calidad con las opciones disponibles"""
         if qualities:
+            # Ordenar calidades de manera inteligente (mayor a menor)
             sorted_qualities = sorted(
                 qualities,
                 key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0,
@@ -526,7 +478,7 @@ class TV3_GUI(ctk.CTk):
                 self.generate_and_download()
             return
         
-        self.is_processing = True
+        self.is_downloading = True
         self.disable_controls()
         self.add_log("⬇️ Iniciando descarga...")
         self.progress_bar.set(0)
@@ -534,172 +486,538 @@ class TV3_GUI(ctk.CTk):
         
         def download_thread():
             try:
-                program_name = self.program_info.get("nombonic")
                 output_folder = self.output_entry.get()
-                workers = str(self.workers_var.get())
-                quality = self.quality_var.get()
+                workers = self.workers_var.get()
+                use_aria2 = self.aria2_var.get()
+                resume = self.resume_var.get()
                 
-                # Construir argumentos
-                args = [
-                    program_name,
-                    "--workers", workers,
-                    "--output", output_folder
-                ]
+                # Cargar manifest para saber total de archivos
+                with open("manifest.json", "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                total_files = len(manifest.get("items", []))
                 
-                if quality != "Todas":
-                    args.extend(["--quality", quality])
+                self.log_queue.put(("log", f"📦 Total archivos a descargar: {total_files}"))
                 
-                if not self.vtt_var.get():
-                    args.append("--no-vtt")
+                # Usar función personalizada con progreso
+                self.download_from_csv_with_progress(
+                    "links-fitxers.csv",
+                    self.program_info.get("titol"),
+                    total_files,
+                    videos_folder=output_folder,
+                    max_workers=workers,
+                    use_aria2=use_aria2,
+                    resume=resume
+                )
                 
-                if self.aria2_var.get():
-                    args.append("--aria2")
-                
-                if self.resume_var.get():
-                    args.append("--resume")
-                
-                # Cargar manifest para calcular progreso
-                total_files = 0
-                if os.path.exists("manifest.json"):
-                    with open("manifest.json", "r", encoding="utf-8") as f:
-                        manifest = json.load(f)
-                        total_files = len(manifest.get("items", []))
-                
-                self.log_queue.put(("log", f"📦 Total archivos en manifest: {total_files}"))
-                
-                # Ejecutar proceso
-                process = self.run_tv3_command(args)
-                
-                downloaded_count = 0
-                
-                for line in process.stdout:
-                    line = line.strip()
-                    if line:
-                        self.log_queue.put(("log", line))
-                        
-                        # Detectar archivos completados
-                        if "Guardado:" in line or "descargados correctamente:" in line:
-                            match = re.search(r'descargados correctamente:\s*(\d+)', line)
-                            if match:
-                                downloaded_count = int(match.group(1))
-                            else:
-                                downloaded_count += 1
-                            
-                            if total_files > 0:
-                                progress = downloaded_count / total_files
-                                self.progress_queue.put({
-                                    "type": "progress",
-                                    "value": min(progress, 0.99)
-                                })
-                                self.progress_queue.put({
-                                    "type": "info",
-                                    "text": f"Descargando: {downloaded_count}/{total_files} archivos ({int(progress * 100)}%)"
-                                })
-                
-                process.wait()
-                
-                if process.returncode == 0:
-                    self.progress_queue.put({"type": "complete", "text": ""})
-                    self.log_queue.put(("log", "🎉 ¡Descarga completada!"))
-                else:
-                    self.progress_queue.put({"type": "error", "text": "Error en descarga"})
+                self.progress_queue.put({"type": "complete", "text": ""})
+                self.log_queue.put(("log", "🎉 ¡Descarga completada!"))
                 
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error en descarga: {str(e)}"))
                 self.progress_queue.put({"type": "error", "text": str(e)})
             finally:
-                self.is_processing = False
+                self.is_downloading = False
                 self.after(0, self.enable_controls)
         
         threading.Thread(target=download_thread, daemon=True).start()
     
+
+# ----------------------------
+# Utilities
+# ----------------------------
+def ensure_folder(path):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+def safe_filename(name):
+    name = re.sub(r'[\\/:"*?<>|]+', '-', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
+
+def fetch_json(url, params=None, timeout=20):
+    r = SESSION.get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+# ----------------------------
+# Cache helpers
+# ----------------------------
+CACHE_DIR = "cache"
+ensure_folder(CACHE_DIR)
+
+def cache_get(id_):
+    path = os.path.join(CACHE_DIR, f"{id_}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+def cache_set(id_, data):
+    path = os.path.join(CACHE_DIR, f"{id_}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.debug("Cache write failed %s: %s", path, e)
+
+def obtener_program_info(nombonic):
+    data = fetch_json("https://api.3cat.cat/programestv")
+    try:
+        lletra = data["resposta"]["items"]["lletra"]
+        items = []
+        if isinstance(lletra, dict) and "item" in lletra:
+            it = lletra["item"]
+            items = it if isinstance(it, list) else [it]
+        elif isinstance(lletra, list):
+            for l in lletra:
+                if "item" in l:
+                    it = l["item"]
+                    items += it if isinstance(it, list) else [it]
+        for p in items:
+            if isinstance(p, dict) and p.get("nombonic") == nombonic:
+                return {"id": p.get("id"), "titol": p.get("titol"), "nombonic": p.get("nombonic")}
+    except Exception as e:
+        logger.debug("Error parsing programestv: %s", e)
+    raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
+
+# ----------------------------
+# IDs extraction (parallel pages)
+# ----------------------------
+def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
+    params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": 1}
+    data = fetch_json("https://api.3cat.cat/videos", params=params)
+    pags = int(data["resposta"]["paginacio"].get("total_pagines", 1))
+    logger.info("Total páginas: %s", pags)
+
+    def fetch_page(page):
+        attempts = 0
+        while attempts <= max_retries:
+            attempts += 1
+            try:
+                params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": page}
+                d = fetch_json("https://api.3cat.cat/videos", params=params)
+                item_list = d["resposta"]["items"]["item"]
+                if isinstance(item_list, dict):
+                    item_list = [item_list]
+                ids_local = [i["id"] for i in item_list if "id" in i]
+                tcap_local = [i["capitol_temporada"] for i in item_list if "capitol_temporada" in i]
+                return ids_local, tcap_local
+            except Exception as e:
+                logger.debug("fetch_page(%s) error (attempt %s): %s", page, attempts, e)
+                time.sleep(1 * attempts)
+        logger.error("Página %s falló tras %s intentos", page, max_retries)
+        return []
+
+    all_ids = []
+    all_tcaps = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(fetch_page, p): p for p in range(1, pags+1)}
+        for future in as_completed(futures):
+            page = futures[future]
+            try:
+                ids = future.result()
+                logger.info("Página %s -> %s ids", page, len(ids[0]))
+                all_ids.extend(ids[0])
+                all_tcaps.extend(ids[1])
+            except Exception as e:
+                logger.error("Error página %s: %s", page, e)
+
+    logger.info("Total capítulos: %s", len(all_ids))
+    #return all_ids,all_tcaps
+    return [{"id": id, "tcap": tcap} for id, tcap in zip(all_ids, all_tcaps)]
+
+# ----------------------------
+# Extract media metadata per chapter (with cache)
+# ----------------------------
+def api_extract_media_urls(id_cap):
+    cached = cache_get(id_cap)
+    if cached:
+        return cached
+
+    url = "https://api.3cat.cat/pvideo/media.jsp"
+    params = {"media": "video", "version": "0s", "idint": id_cap}
+    try:
+        r = SESSION.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+
+        info = {}
+        info["id"] = id_cap
+        info["programa"] = data.get("informacio", {}).get("programa", "UnknownProgram")
+        info["title"] = data.get("informacio", {}).get("titol", f"capitol-{id_cap}")
+        info["capitol"] = data.get("informacio", {}).get("capitol", str(id_cap))
+        info["temporada"] = data.get("informacio", {}).get("temporada", {}).get("idName", "0")[7:] or "0"
+        files = data.get("media", {}).get("url", []) or []
+        if isinstance(files, dict):
+            files = [files]
+        mp4s = []
+        for entry in files:
+            if not isinstance(entry, dict): continue
+            mp4 = entry.get("file")
+            label = entry.get("label") or entry.get("quality") or entry.get("descripcio") or ""
+            if mp4 and ("mp4" in mp4.lower()):
+                mp4s.append({"label": label or "mp4", "url": mp4})
+        vfiles = data.get("subtitols", []) or []
+        if isinstance(vfiles, dict):
+            vfiles = [vfiles]
+        vtts = []
+        for entry in vfiles:
+            if not isinstance(entry, dict): continue
+            vtt = entry.get("url")
+            label = entry.get("text") or entry.get("lang") or ""
+            if vtt and (".vtt" in vtt.lower() or "vtt" in vtt.lower()):
+                vtts.append({"label": label or "vtt", "url": vtt})
+        info["mp4s"] = mp4s
+        info["vtts"] = vtts
+        cache_set(id_cap, info)
+        return info
+    except Exception as e:
+        logger.error("Error fetch media id=%s : %s", id_cap, e)
+        return None
+
+# ----------------------------
+# CSV + manifest builder (parallel)
+# ----------------------------
+def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
+    ensure_folder("cache")
+    rows = []
+    failed = []
+
+    def worker(cid):
+        attempts = 0
+        while attempts <= retry_failed:
+            attempts += 1
+            res = api_extract_media_urls(cid["id"])
+            if res:
+                break
+            logger.warning("Retry media id=%s attempt=%s", cid["id"], attempts)
+            time.sleep(1 * attempts)
+        if not res:
+            failed.append(cid)
+            return []
+        program = safe_filename(res["programa"])
+        title = safe_filename(res["title"])
+        safe_title = safe_filename(res["title"]).split("-", 1)[1].strip()
+        capitol = res.get("capitol", str(res["id"]))
+        temporada = res.get("temporada")
+        tcap = cid["tcap"]
+        safe_name = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
+        local = []
+        # Filtrar mp4 por quality_filter
+        for mp in res["mp4s"]:
+            if quality_filter and quality_filter not in mp["label"]:
+                continue
+            fname = mp["url"].split("/")[-1]
+            local.append([capitol, program, temporada, tcap, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
+        # Subtítulos solo si include_vtt=True
+        if include_vtt:
+            for vt in res["vtts"]:
+                fname = vt["url"].split("/")[-1]
+                local.append([capitol, program, temporada, tcap, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
+        return local
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(worker, cid): cid for cid in cids}
+        with tqdm(total=len(futures), desc="Extrayendo capítulos", unit="cap", disable=not sys.stdout.isatty()) as p:
+            for future in as_completed(futures):
+                cid = futures[future]
+                try:
+                    chapter_rows = future.result()
+                    rows.extend(chapter_rows)
+                except Exception as e:
+                    logger.error("Error procesando id %s: %s", cid, e)
+                    failed.append(cid)
+                p.update(1)
+
+    def safe_int(x):
+        try:
+            return int(x)
+        except:
+            return 0
+    rows_sorted = sorted(rows, key=lambda r: safe_int(r[0]))
+
+    # CSV
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Capitol", "Program", "Temporada", "TempCap", "Title", "Name", "Quality", "Link", "File Name", "Type"])
+        writer.writerows(rows_sorted)
+
+    # Manifest JSON
+    manifest = {"generated_at": time.time(), "items": []}
+    for r in rows_sorted:
+        manifest["items"].append({
+            "capitol": r[0],
+            "program": r[1],
+            "temporada": r[2],
+            "temporada_capitol": r[3],
+            "title": r[4],
+            "name": r[5],
+            "quality": r[6],
+            "link": r[7],
+            "file_name": r[8],
+            "type": r[9]
+        })
+    with open(manifest_path, "w", encoding="utf-8") as mf:
+        json.dump(manifest, mf, ensure_ascii=False, indent=2)
+
+    if failed:
+        with open("errors_ids.txt", "w", encoding="utf-8") as ef:
+            for fid in failed:
+                ef.write(str(fid) + "\n")
+        logger.warning("Algunos ids fallaron. Guardados en errors_ids.txt")
+
+    logger.info("CSV generado: %s, manifest: %s, filas: %s", output_csv, manifest_path, len(rows_sorted))
+    return output_csv, manifest_path, len(rows_sorted)
+
+
+def download_chunked(url, dst, desc_name, max_retries=4, timeout=30, use_range=True):
+    ensure_folder(os.path.dirname(dst))
+    tmp = dst + ".part"
+    existing = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+    headers = {}
+
+    if use_range and existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+
+    backoff = 1
+    last_exc = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
+
+                # ---------- CLAVE ----------
+                if "Range" in headers:
+                    if r.status_code == 206:
+                        mode = "ab"   # resume REAL
+                    elif r.status_code == 416:
+                        # Ya estaba completo
+                        os.replace(tmp, dst)
+                        return dst
+                    else:
+                        # 200 OK → servidor ignoró Range
+                        logger.warning("Servidor ignoró Range para %s, reiniciando descarga", dst)
+                        existing = 0
+                        headers.pop("Range", None)
+                        mode = "wb"
+                else:
+                    mode = "wb"
+                # ---------------------------
+
+                r.raise_for_status()
+
+                total = r.headers.get("Content-Length")
+                total = int(total) if total else None
+                total_bytes = (existing + total) if total and mode == "ab" else total
+
+                with open(tmp, mode) as f, tqdm(
+                    total=total_bytes,
+                    initial=existing if mode == "ab" else 0,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=desc_name,
+                    leave=False,
+                    miniters=1,
+                    mininterval=0.1,
+                    disable=not sys.stdout.isatty()
+                ) as pbar:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            pbar.update(len(chunk))
+
+                os.replace(tmp, dst)
+                return dst
+
+        except Exception as e:
+            last_exc = e
+            logger.debug("download attempt %s failed for %s: %s", attempt, url, e)
+            time.sleep(backoff)
+            backoff *= 2
+
+    logger.error("Failed download %s after %s attempts: %s", url, max_retries, last_exc)
+    return None
+
+def download_with_aria2(url, dst, aria2c_bin="aria2c"):
+    ensure_folder(os.path.dirname(dst))
+    cmd = [
+        aria2c_bin,
+        "--file-allocation=none",
+        "--max-connection-per-server=4",
+        "--split=4",
+        "--continue=true",
+        "--dir", os.path.dirname(dst),
+        "--out", os.path.basename(dst),
+        url
+    ]
+    try:
+        subprocess.check_call(cmd)
+        return dst
+    except Exception as e:
+        logger.debug("aria2 failed: %s", e)
+        return None
+
+
+    def download_from_csv_with_progress(self, csv_path, program_name, total_files, videos_folder="downloads", 
+                                        subtitols_folder="downloads", max_workers=6, use_aria2=False, resume=True):
+        """
+        Versión personalizada de download_from_csv con actualizaciones de progreso para la GUI
+        """
+        program_safe = safe_filename(program_name)
+        base_folder = videos_folder
+        ensure_folder(base_folder)
+
+        rows = []
+        with open(csv_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                rows.append(r)
+
+        logger.info("Iniciando descargas: %s archivos (manifiesto)", len(rows))
+
+        # Preparar lista de tareas según modo resume
+        tasks = []
+        for row in rows:
+            link = row["Link"].strip()
+            fname = row["File Name"].strip()
+            program = safe_filename(row["Program"])
+            folder = os.path.join(base_folder, program)
+            ensure_folder(folder)
+            final_name = f"{row['Name']}.{fname.split('.')[-1]}"
+            dst = os.path.join(folder, safe_filename(final_name))
+            tmp = dst + ".part"
+
+            # Resume-only mode
+            if resume:
+                if not os.path.exists(tmp):
+                    logger.debug("Skipping %s: no existe %s (resume-only)", dst, os.path.basename(tmp))
+                    continue
+                method_use_aria2 = False
+            else:
+                if os.path.exists(dst):
+                    logger.info("Skip %s, ya existe", dst)
+                    continue
+                method_use_aria2 = bool(use_aria2)
+
+            desc_name = os.path.basename(dst)
+            tasks.append({"link": link, "dst": dst, "desc": desc_name, "use_aria2": method_use_aria2})
+
+        if not tasks:
+            logger.info("No hay tareas para procesar")
+            self.log_queue.put(("log", "ℹ️ No hay archivos pendientes de descarga"))
+            return
+
+        logger.info("Tareas a ejecutar: %s", len(tasks))
+        total_tasks = len(tasks)
+        completed_tasks = 0
+
+        # Ejecutar descargas paralelas con actualización de progreso
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {}
+            for t in tasks:
+                if t["use_aria2"]:
+                    fut = ex.submit(download_with_aria2, t["link"], t["dst"])
+                else:
+                    fut = ex.submit(download_chunked, t["link"], t["dst"], t["desc"], 4, 30, not resume)
+                futures[fut] = t["dst"]
+
+            for future in as_completed(futures):
+                dst = futures[future]
+                try:
+                    res = future.result()
+                    if res:
+                        logger.debug("Guardado: %s", res)
+                        completed_tasks += 1
+                        
+                        # Actualizar progreso en GUI
+                        progress_value = completed_tasks / total_tasks
+                        self.progress_queue.put({
+                            "type": "progress",
+                            "value": progress_value
+                        })
+                        self.progress_queue.put({
+                            "type": "info",
+                            "text": f"Descargando: {completed_tasks}/{total_tasks} archivos ({int(progress_value * 100)}%)"
+                        })
+                        
+                        # Log cada 5 archivos o al completar
+                        if completed_tasks % 5 == 0 or completed_tasks == total_tasks:
+                            self.log_queue.put(("log", f"📥 Progreso: {completed_tasks}/{total_tasks} archivos descargados"))
+                    else:
+                        logger.warning("No guardado: %s", dst)
+                        self.log_queue.put(("log", f"⚠️ Fallo al descargar: {os.path.basename(dst)}"))
+                except Exception as e:
+                    logger.error("Error en descarga: %s (%s)", dst, e)
+                    self.log_queue.put(("log", f"❌ Error: {os.path.basename(dst)} - {str(e)}"))
+
+        logger.info("Descargas finalizadas.")
+
+        # Estadísticas finales
+        total_downloaded = sum(1 for t in tasks if os.path.exists(t["dst"]))
+        total_failed = total_tasks - total_downloaded
+        size_bytes = sum(os.path.getsize(t["dst"]) for t in tasks if os.path.exists(t["dst"]))
+        size_mb = size_bytes / (1024*1024)
+
+        self.log_queue.put(("log", "===== Estadísticas finales ====="))
+        self.log_queue.put(("log", f"Total archivos intentados: {total_tasks}"))
+        self.log_queue.put(("log", f"Archivos descargados: {total_downloaded}"))
+        self.log_queue.put(("log", f"Archivos fallidos: {total_failed}"))
+        self.log_queue.put(("log", f"Tamaño total: {size_mb:.2f} MB"))
+        self.log_queue.put(("log", "================================"))
+    
     def generate_and_download(self):
         """Generar lista y luego descargar"""
         self.disable_controls()
-        self.progress_bar.set(0)
         
         def full_process():
             try:
-                program_name = self.program_info.get("nombonic")
-                output_folder = self.output_entry.get()
-                workers = str(self.workers_var.get())
+                # Primero generar
+                program_id = self.program_info.get("id")
+                workers = self.workers_var.get()
                 quality = self.quality_var.get()
+                include_vtt = self.vtt_var.get()
                 
-                # Construir argumentos
-                args = [
-                    program_name,
-                    "--workers", workers,
-                    "--output", output_folder
-                ]
+                quality_filter = "" if quality == "Todas" else quality
                 
-                if quality != "Todas":
-                    args.extend(["--quality", quality])
+                self.log_queue.put(("log", "🔄 Paso 1/2: Generando lista..."))
+                cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
                 
-                if not self.vtt_var.get():
-                    args.append("--no-vtt")
+                csv_path, manifest_path, total = build_links_csv(
+                    cids,
+                    output_csv="links-fitxers.csv",
+                    manifest_path="manifest.json",
+                    workers=workers,
+                    include_vtt=include_vtt,
+                    quality_filter=quality_filter
+                )
                 
-                if self.aria2_var.get():
-                    args.append("--aria2")
+                self.log_queue.put(("log", "✅ Lista generada correctamente"))
+                self.log_queue.put(("log", "🔄 Paso 2/2: Descargando archivos..."))
                 
-                if self.resume_var.get():
-                    args.append("--resume")
+                # Extraer calidades antes de descargar
+                self.extract_available_qualities(manifest_path)
                 
-                self.log_queue.put(("log", "🔄 Generando lista y descargando..."))
-                self.progress_queue.put({"type": "info", "text": "Estado: Generando lista..."})
+                # Luego descargar
+                output_folder = self.output_entry.get()
+                use_aria2 = self.aria2_var.get()
+                resume = self.resume_var.get()
                 
-                # Ejecutar proceso completo
-                process = self.run_tv3_command(args)
+                self.download_from_csv_with_progress(
+                    csv_path,
+                    self.program_info.get("titol"),
+                    total,
+                    videos_folder=output_folder,
+                    max_workers=workers,
+                    use_aria2=use_aria2,
+                    resume=resume
+                )
                 
-                total_files = 0
-                downloaded_count = 0
-                generating = True
-                
-                for line in process.stdout:
-                    line = line.strip()
-                    if line:
-                        self.log_queue.put(("log", line))
-                        
-                        # Detectar fase de generación completada
-                        if "CSV generado:" in line or "Iniciando descargas:" in line:
-                            generating = False
-                            self.progress_queue.put({"type": "info", "text": "Estado: Descargando..."})
-                        
-                        # Extraer total de archivos
-                        if "Iniciando descargas:" in line or "archivos (manifiesto)" in line:
-                            match = re.search(r'(\d+)\s+archivos', line)
-                            if match:
-                                total_files = int(match.group(1))
-                        
-                        # Detectar progreso de descarga
-                        if not generating and ("Guardado:" in line or "descargados correctamente:" in line):
-                            match = re.search(r'descargados correctamente:\s*(\d+)', line)
-                            if match:
-                                downloaded_count = int(match.group(1))
-                            else:
-                                downloaded_count += 1
-                            
-                            if total_files > 0:
-                                progress = downloaded_count / total_files
-                                self.progress_queue.put({
-                                    "type": "progress",
-                                    "value": min(progress, 0.99)
-                                })
-                                self.progress_queue.put({
-                                    "type": "info",
-                                    "text": f"Descargando: {downloaded_count}/{total_files} archivos ({int(progress * 100)}%)"
-                                })
-                
-                process.wait()
-                
-                # Extraer calidades si se generó la lista
-                if os.path.exists("manifest.json"):
-                    self.extract_available_qualities("manifest.json")
-                
-                if process.returncode == 0:
-                    self.progress_queue.put({"type": "complete", "text": ""})
-                    self.log_queue.put(("log", "🎉 ¡Proceso completo finalizado!"))
-                else:
-                    self.progress_queue.put({"type": "error", "text": "Error en el proceso"})
+                self.progress_queue.put({"type": "complete", "text": ""})
+                self.log_queue.put(("log", "🎉 ¡Proceso completo finalizado!"))
                 
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error: {str(e)}"))
