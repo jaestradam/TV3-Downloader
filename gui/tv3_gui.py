@@ -164,6 +164,9 @@ class TV3_GUI(ctk.CTk):
         
         # Variables para la tabla
         self.tree_items = {}  # {iid: item_data}
+        self.all_items = []  # Lista completa de items sin filtrar
+        self.sort_column = None
+        self.sort_reverse = False
         
         # Crear interfaz
         self.create_widgets()
@@ -270,7 +273,7 @@ class TV3_GUI(ctk.CTk):
         q_frame.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(q_frame, text="Calidad:", width=60, anchor="w").pack(side="left")
         self.quality_var = ctk.StringVar(value="Todas")
-        self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled")
+        self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled", command=self.on_quality_change)
         self.quality_combo.pack(side="left")
 
         # Subtitulos
@@ -278,7 +281,7 @@ class TV3_GUI(ctk.CTk):
         s_frame.grid(row=0, column=1, sticky="w", padx=20)
         ctk.CTkLabel(s_frame, text="Subtitulos:", width=80, anchor="w").pack(side="left")
         self.vttlang_var = ctk.StringVar(value="Todos")
-        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled")
+        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled", command=self.on_vttlang_change)
         self.vttlang_combo.pack(side="left")
 
         # Workers
@@ -365,22 +368,46 @@ class TV3_GUI(ctk.CTk):
         # Controles de selección
         self.preview_controls_container = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
         
+        # Fila 1: Botones de selección
         controls_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         controls_frame.pack(fill="x", padx=15, pady=(0, 10))
         
         ctk.CTkButton(controls_frame, text="✓ Todos", width=100, command=self.select_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="✓ Filtrados", width=100, command=self.select_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="✗ Ninguno", width=100, command=self.deselect_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="✗ Filtrados", width=100, command=self.deselect_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="🔄 Invertir", width=100, command=self.invert_selection).pack(side="left", padx=5)
+        
+        # Botón para obtener tamaños
+        self.fetch_sizes_btn = ctk.CTkButton(
+            controls_frame, 
+            text="📏 Obtener Tamaños", 
+            width=140, 
+            command=self.fetch_file_sizes,
+            fg_color=("blue", "darkblue")
+        )
+        self.fetch_sizes_btn.pack(side="left", padx=5)
         
         self.selection_info = ctk.CTkLabel(controls_frame, text="Seleccionados: 0/0", font=ctk.CTkFont(size=12))
         self.selection_info.pack(side="right", padx=15)
+        
+        # Fila 2: Filtro de búsqueda
+        filter_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=15, pady=(0, 10))
+        
+        ctk.CTkLabel(filter_frame, text="🔍 Filtrar:", width=60, anchor="w").pack(side="left", padx=(0, 5))
+        self.filter_entry = ctk.CTkEntry(filter_frame, placeholder_text="Buscar por título, temporada, capítulo...")
+        self.filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
+        
+        ctk.CTkButton(filter_frame, text="❌ Limpiar", width=80, command=self.clear_filter).pack(side="left", padx=5)
         
         # Tabla
         self.preview_table_container = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         
         # Crear Treeview con estilo personalizado
         style = ttk.Style()
-        style.theme_use("clam")
+        style.theme_use("default")
         
         # Configurar colores para modo oscuro
         style.configure("Treeview",
@@ -391,9 +418,10 @@ class TV3_GUI(ctk.CTk):
             font=('Segoe UI', 10)
         )
         style.configure("Treeview.Heading",
-            background="#1f538d",
+            background="#333333",
             foreground="white",
             borderwidth=1,
+            relief="flat",
             font=('Segoe UI', 10, 'bold')
         )
         style.map("Treeview",
@@ -423,13 +451,13 @@ class TV3_GUI(ctk.CTk):
         hsb.config(command=self.tree.xview)
         
         # Configurar columnas
-        self.tree.heading("sel", text="✓")
-        self.tree.heading("temp", text="Temp")
-        self.tree.heading("cap", text="Cap")
-        self.tree.heading("titulo", text="Título")
-        self.tree.heading("calidad", text="Calidad")
-        self.tree.heading("tipo", text="Tipo")
-        self.tree.heading("tamaño", text="Tamaño")
+        self.tree.heading("sel", text="✓", command=lambda: self.sort_by_column("sel"))
+        self.tree.heading("temp", text="Temp", command=lambda: self.sort_by_column("temp"))
+        self.tree.heading("cap", text="Cap", command=lambda: self.sort_by_column("cap"))
+        self.tree.heading("titulo", text="Título", command=lambda: self.sort_by_column("titulo"))
+        self.tree.heading("calidad", text="Calidad", command=lambda: self.sort_by_column("calidad"))
+        self.tree.heading("tipo", text="Tipo", command=lambda: self.sort_by_column("tipo"))
+        self.tree.heading("tamaño", text="Tamaño", command=lambda: self.sort_by_column("tamaño"))
         
         self.tree.column("sel", width=40, anchor="center")
         self.tree.column("temp", width=60, anchor="center")
@@ -523,35 +551,213 @@ class TV3_GUI(ctk.CTk):
         
         items = self.manifest_data.get("items", [])
         
+        # Guardar todos los items
+        self.all_items = []
+        
         for idx, item in enumerate(items):
-            temp = item.get("temporada", "?")
-            cap = item.get("temporada_capitol", "?")
-            titulo = item.get("title", "Sin título")
-            calidad = item.get("quality", "?")
-            tipo = item.get("type", "?").upper()
-            
-            # Tamaño (pendiente de implementar)
-            tamaño = "?"
-            
-            # Insertar en el tree
-            iid = self.tree.insert("", "end", values=(
-                "✓",  # Seleccionado por defecto
-                temp,
-                cap,
-                titulo,
-                calidad,
-                tipo,
-                tamaño
-            ))
-            
-            # Guardar referencia al item
-            self.tree_items[iid] = {
+            item_data = {
+                "temp": item.get("temporada", "?"),
+                "cap": item.get("temporada_capitol", "?"),
+                "titulo": item.get("title", "Sin título"),
+                "calidad": item.get("quality", "?"),
+                "tipo": item.get("type", "?").upper(),
+                "tamaño": "?",
+                "tamaño_bytes": 0,
                 "item": item,
                 "selected": True
             }
+            self.all_items.append(item_data)
+        
+        # Aplicar filtro (inicialmente muestra todo)
+        self.apply_filter()
+        
+        self.add_log(f"📊 Cargados {len(items)} elementos en la vista previa")
+    
+    def apply_filter(self):
+        """Aplicar filtro de búsqueda a la tabla"""
+        # Limpiar tabla
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.tree_items.clear()
+        
+        # Obtener texto de filtro
+        filter_text = self.filter_entry.get().lower().strip()
+        
+        # Filtrar items
+        filtered_items = []
+        for item_data in self.all_items:
+            if not filter_text:
+                filtered_items.append(item_data)
+            else:
+                # Buscar en varios campos
+                searchable = f"{item_data['temp']} {item_data['cap']} {item_data['titulo']} {item_data['calidad']} {item_data['tipo']}".lower()
+                if filter_text in searchable:
+                    filtered_items.append(item_data)
+        
+        # Ordenar si hay columna activa
+        if self.sort_column:
+            filtered_items = self.sort_items(filtered_items, self.sort_column, self.sort_reverse)
+        
+        # Insertar items filtrados
+        for item_data in filtered_items:
+            iid = self.tree.insert("", "end", values=(
+                "✓" if item_data["selected"] else "",
+                item_data["temp"],
+                item_data["cap"],
+                item_data["titulo"],
+                item_data["calidad"],
+                item_data["tipo"],
+                item_data["tamaño"]
+            ))
+            
+            # Guardar referencia
+            self.tree_items[iid] = item_data
         
         self.update_selection_info()
-        self.add_log(f"📊 Cargados {len(items)} elementos en la vista previa")
+    
+    def clear_filter(self):
+        """Limpiar el filtro de búsqueda"""
+        self.filter_entry.delete(0, "end")
+        self.apply_filter()
+    
+    def sort_by_column(self, column):
+        """Ordenar tabla por columna"""
+        # Si es la misma columna, invertir orden
+        if self.sort_column == column:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_column = column
+            self.sort_reverse = False
+        
+        # Actualizar headers para mostrar indicador de orden
+        for col in ("sel", "temp", "cap", "titulo", "calidad", "tipo", "tamaño"):
+            text = {
+                "sel": "✓",
+                "temp": "Temp",
+                "cap": "Cap",
+                "titulo": "Título",
+                "calidad": "Calidad",
+                "tipo": "Tipo",
+                "tamaño": "Tamaño"
+            }[col]
+            
+            if col == column:
+                indicator = " ▼" if self.sort_reverse else " ▲"
+                text += indicator
+            
+            self.tree.heading(col, text=text)
+        
+        # Reaplicar filtro (que incluye el ordenamiento)
+        self.apply_filter()
+    
+    def sort_items(self, items, column, reverse):
+        """Ordenar lista de items por columna"""
+        def get_sort_key(item_data):
+            if column == "sel":
+                return item_data["selected"]
+            elif column == "temp":
+                try:
+                    return int(item_data["temp"])
+                except:
+                    return 0
+            elif column == "cap":
+                try:
+                    return int(item_data["cap"])
+                except:
+                    return 0
+            elif column == "titulo":
+                return item_data["titulo"].lower()
+            elif column == "calidad":
+                return item_data["calidad"].lower()
+            elif column == "tipo":
+                return item_data["tipo"]
+            elif column == "tamaño":
+                return item_data["tamaño_bytes"]
+            return ""
+        
+        return sorted(items, key=get_sort_key, reverse=reverse)
+    
+    def fetch_file_sizes(self):
+        """Obtener tamaños de archivos mediante HEAD requests"""
+        if not self.all_items:
+            messagebox.showwarning("Advertencia", "No hay archivos cargados")
+            return
+        
+        self.fetch_sizes_btn.configure(state="disabled", text="⏳ Obteniendo...")
+        self.add_log("📏 Iniciando obtención de tamaños...")
+        
+        def fetch_thread():
+            try:
+                total = len(self.all_items)
+                processed = 0
+                workers = self.workers_var.get()
+                
+                def fetch_size(item_data):
+                    nonlocal processed
+                    try:
+                        url = item_data["item"]["link"]
+                        # Intentar HEAD primero
+                        response = SESSION.head(url, timeout=10, allow_redirects=True)
+                        size = int(response.headers.get("Content-Length", 0))
+                        
+                        # Si HEAD devuelve 0 o falla, intentar GET parcial (para VTT)
+                        if size == 0:
+                            # Hacer GET con Range para obtener solo los headers
+                            response = SESSION.get(
+                                url, 
+                                timeout=10, 
+                                allow_redirects=True,
+                                stream=True
+                            )
+                            size = int(response.headers.get("Content-Length", 0))
+                            
+                            # Si aún es 0, descargar el contenido y medir
+                            if size == 0:
+                                content = response.content
+                                size = len(content)
+                        # Actualizar item_data
+                        item_data["tamaño_bytes"] = size
+                        item_data["tamaño"] = format_size(size)
+                        
+                        processed += 1
+                        if processed % 10 == 0:
+                            self.log_queue.put(("log", f"📏 Procesados {processed}/{total} archivos..."))
+                        
+                        return True
+                    except Exception as e:
+                        item_data["tamaño"] = "Error"
+                        item_data["tamaño_bytes"] = 0
+                        processed += 1
+                        logger.debug(f"Error obteniendo tamaño de {url}: {e}")
+                        return False
+                
+                # Usar ThreadPoolExecutor para paralelizar
+                with ThreadPoolExecutor(max_workers=workers) as ex:
+                    futures = [ex.submit(fetch_size, item_data) for item_data in self.all_items]
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except:
+                            pass
+                
+                # Calcular tamaño total
+                total_bytes = sum(item["tamaño_bytes"] for item in self.all_items)
+                total_selected_bytes = sum(
+                    item["tamaño_bytes"] for item in self.all_items if item["selected"]
+                )
+                
+                self.log_queue.put(("log", f"✅ Tamaños obtenidos: Total {format_size(total_bytes)}"))
+                self.log_queue.put(("log", f"📦 Seleccionados: {format_size(total_selected_bytes)}"))
+                
+                # Actualizar tabla
+                self.after(0, self.apply_filter)
+                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text="📏 Obtener Tamaños"))
+                
+            except Exception as e:
+                self.log_queue.put(("log", f"❌ Error obteniendo tamaños: {str(e)}"))
+                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text="📏 Obtener Tamaños"))
+        
+        threading.Thread(target=fetch_thread, daemon=True).start()
 
     def toggle_item_selection(self, event=None):
         """Toggle selección de un item"""
@@ -574,41 +780,52 @@ class TV3_GUI(ctk.CTk):
 
     def select_all(self):
         """Seleccionar todos los items"""
-        for iid in self.tree_items:
-            self.tree_items[iid]["selected"] = True
-            values = list(self.tree.item(iid)["values"])
-            values[0] = "✓"
-            self.tree.item(iid, values=values)
-        self.update_selection_info()
+        for item_data in self.all_items:
+            item_data["selected"] = True
+        self.apply_filter()
 
+    def select_filter(self):
+        """Seleccionar todos los items"""
+        for iid, item_data in self.tree_items.items():
+            item_data["selected"] = True
+        self.apply_filter()
+    
     def deselect_all(self):
         """Deseleccionar todos los items"""
-        for iid in self.tree_items:
-            self.tree_items[iid]["selected"] = False
-            values = list(self.tree.item(iid)["values"])
-            values[0] = ""
-            self.tree.item(iid, values=values)
-        self.update_selection_info()
+        for item_data in self.all_items:
+            item_data["selected"] = False
+        self.apply_filter()
 
+    def deselect_filter(self):
+        """Deseleccionar todos los items"""
+        for iid, item_data in self.tree_items.items():
+            item_data["selected"] = False
+        self.apply_filter()
+    
     def invert_selection(self):
         """Invertir selección"""
-        for iid in self.tree_items:
-            current = self.tree_items[iid]["selected"]
-            self.tree_items[iid]["selected"] = not current
-            values = list(self.tree.item(iid)["values"])
-            values[0] = "✓" if not current else ""
-            self.tree.item(iid, values=values)
-        self.update_selection_info()
+        for item_data in self.all_items:
+            item_data["selected"] = not item_data["selected"]
+        self.apply_filter()
 
     def update_selection_info(self):
         """Actualizar contador de seleccionados"""
-        total = len(self.tree_items)
-        selected = sum(1 for data in self.tree_items.values() if data["selected"])
-        self.selection_info.configure(text=f"Seleccionados: {selected}/{total}")
+        total = len(self.all_items)
+        selected = sum(1 for item in self.all_items if item["selected"])
+        
+        # Calcular tamaño total seleccionado si está disponible
+        total_size = sum(item["tamaño_bytes"] for item in self.all_items if item["selected"])
+        
+        if total_size > 0:
+            self.selection_info.configure(
+                text=f"Seleccionados: {selected}/{total} ({format_size(total_size)})"
+            )
+        else:
+            self.selection_info.configure(text=f"Seleccionados: {selected}/{total}")
 
     def get_selected_items(self):
         """Obtener lista de items seleccionados"""
-        return [data["item"] for data in self.tree_items.values() if data["selected"]]
+        return [item["item"] for item in self.all_items if item["selected"]]
 
     def add_log(self, message):
         """Añadir mensaje al log y autoscroll"""
@@ -848,6 +1065,62 @@ class TV3_GUI(ctk.CTk):
             self.vttlang_combo.configure(values=["Todos"], state="normal")
             self.add_log("⚠️ No se encontraron subtítulos específicos")
     
+    def on_quality_change(self, choice):
+        """Aplicar filtro de calidad automáticamente"""
+        self.apply_quality_subtitle_filters()
+    
+    def on_vttlang_change(self, choice):
+        """Aplicar filtro de subtítulos automáticamente"""
+        self.apply_quality_subtitle_filters()
+    
+    def apply_quality_subtitle_filters(self):
+        """Aplicar filtros de calidad y subtítulos a la selección"""
+        if not self.all_items:
+            return
+        
+        quality_filter = self.quality_var.get()
+        vttlang_filter = self.vttlang_var.get()
+        
+        # Log de la acción
+        filters_applied = []
+        if quality_filter != "Todas":
+            filters_applied.append(f"Calidad: {quality_filter}")
+        if vttlang_filter != "Todos":
+            filters_applied.append(f"Subtítulos: {vttlang_filter}")
+        
+        if filters_applied:
+            self.add_log(f"🔧 Aplicando filtros: {', '.join(filters_applied)}")
+        
+        # Aplicar filtros a todos los items
+        for item_data in self.all_items:
+            item_type = item_data["tipo"]
+            item_quality = item_data["calidad"]
+            
+            should_select = True
+            
+            # Filtro de calidad (solo para MP4)
+            if item_type == "MP4":
+                if quality_filter == "Ninguna (No Video)":
+                    should_select = False
+                elif quality_filter != "Todas" and quality_filter not in item_quality:
+                    should_select = False
+            
+            # Filtro de subtítulos (solo para VTT)
+            if item_type == "VTT":
+                if vttlang_filter == "Ninguno (No Subs)":
+                    should_select = False
+                elif vttlang_filter != "Todos" and vttlang_filter not in item_quality:
+                    should_select = False
+            
+            # Actualizar selección
+            item_data["selected"] = should_select
+        
+        # Actualizar la vista
+        self.apply_filter()
+        
+        # Contar seleccionados
+        selected_count = sum(1 for item in self.all_items if item["selected"])
+        self.add_log(f"✓ Filtros aplicados: {selected_count} elementos seleccionados")
     def start_download(self):
         if not self.program_info or not self.manifest_data:
             messagebox.showwarning("Advertencia", "Primero busca un programa")
@@ -970,6 +1243,24 @@ class TV3_GUI(ctk.CTk):
 # ----------------------------
 # Utilities
 # ----------------------------
+def format_size(bytes_size):
+    """Formatear tamaño en bytes a formato legible"""
+    if bytes_size == 0:
+        return "0 B"
+    
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit_index = 0
+    size = float(bytes_size)
+    
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    
+    if unit_index == 0:
+        return f"{int(size)} {units[unit_index]}"
+    else:
+        return f"{size:.2f} {units[unit_index]}"
+
 def ensure_folder(path):
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
