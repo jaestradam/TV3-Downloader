@@ -1914,7 +1914,7 @@ class TV3_GUI(ctk.CTk):
                         text=self.translator.get("messages.program_not_found"), 
                         text_color=("red", "lightcoral")
                     ))
-                    self.progress_queue.put({"type": "error", "text": error_msg})
+                    self.progress_queue.put({"type": "error", "text": self.translator.get("messages.program_not_found_name", nombonic=program_name)})
                     return
 
                 self.program_info = info
