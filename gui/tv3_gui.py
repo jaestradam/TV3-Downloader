@@ -65,6 +65,81 @@ class QueueLogHandler(logging.Handler):
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+class CTkToolTip:
+    def __init__(self, widget, text, delay=400, wrap=260):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self.wrap = wrap
+        self.tipwindow = None
+        self.id = None
+
+        widget.bind("<Enter>", self._schedule)
+        widget.bind("<Leave>", self._hide)
+        widget.bind("<ButtonPress>", self._hide)
+
+    def _schedule(self, event=None):
+        self.id = self.widget.after(self.delay, self._show)
+
+    def _show(self):
+        if self.tipwindow or not self.text:
+            return
+
+        tw = self.tipwindow = ctk.CTkToplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.attributes("-topmost", True)
+
+        frame = ctk.CTkFrame(tw, corner_radius=8)
+        frame.pack()
+
+        label = ctk.CTkLabel(
+            frame,
+            text=self.text,
+            justify="left",
+            wraplength=self.wrap,
+            font=ctk.CTkFont(size=12)
+        )
+        label.pack(padx=10, pady=6)
+
+        # --- FORZAR cálculo real del tamaño ---
+        tw.update_idletasks()
+
+        tip_w = tw.winfo_width()
+        tip_h = tw.winfo_height()
+
+        wx = self.widget.winfo_rootx()
+        wy = self.widget.winfo_rooty()
+        ww = self.widget.winfo_width()
+        wh = self.widget.winfo_height()
+
+        screen_w = tw.winfo_screenwidth()
+        screen_h = tw.winfo_screenheight()
+
+        # Posición preferida (derecha)
+        x = wx + ww + 10
+        y = wy + (wh // 2) - (tip_h // 3)
+
+        # 👉 Si se sale por la derecha → izquierda
+        if x + tip_w > screen_w:
+            x = wx - tip_w - 10
+
+        # 👉 Si se sale por arriba
+        if y < 0:
+            y = 10
+
+        # 👉 Si se sale por abajo
+        if y + tip_h > screen_h:
+            y = screen_h - tip_h - 10
+
+        tw.geometry(f"+{x}+{y}")
+
+    def _hide(self, event=None):
+        if self.id:
+            self.widget.after_cancel(self.id)
+            self.id = None
+        if self.tipwindow:
+            self.tipwindow.destroy()
+            self.tipwindow = None
 
 class TV3_GUI(ctk.CTk):
     def __init__(self):
@@ -198,26 +273,41 @@ class TV3_GUI(ctk.CTk):
         self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled")
         self.quality_combo.pack(side="left")
 
+        # Subtitulos
+        s_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
+        s_frame.grid(row=0, column=1, sticky="w", padx=20)
+        ctk.CTkLabel(s_frame, text="Subtitulos:", width=80, anchor="w").pack(side="left")
+        self.vttlang_var = ctk.StringVar(value="Todos")
+        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled")
+        self.vttlang_combo.pack(side="left")
+
         # Workers
         w_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
-        w_frame.grid(row=0, column=1, sticky="w", padx=20)
+        w_frame.grid(row=0, column=2, sticky="w", padx=20)
         ctk.CTkLabel(w_frame, text="Workers:", width=60, anchor="w").pack(side="left")
         self.workers_var = ctk.IntVar(value=3)
-        self.workers_slider = ctk.CTkSlider(w_frame, from_=1, to=12, number_of_steps=11, variable=self.workers_var, width=120)
+        self.workers_slider = ctk.CTkSlider(w_frame, from_=1, to=10, number_of_steps=9, variable=self.workers_var, width=100)
         self.workers_slider.pack(side="left", padx=5)
         self.workers_label = ctk.CTkLabel(w_frame, text="3", width=20)
         self.workers_label.pack(side="left")
         self.workers_slider.configure(command=lambda v: self.workers_label.configure(text=str(int(v))))
+        infoWorkers = ctk.CTkLabel(w_frame, text="ℹ️", cursor="hand2")
+        infoWorkers.pack(side="left")
+        CTkToolTip(infoWorkers, "Número de conexiones en paralelo para agilizar descargas. Si la descarga falla, reducir el número de descargas paralelas configuradas.")
 
         # Checks
         check_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
-        check_frame.grid(row=0, column=2, sticky="w", padx=20)
-        self.vtt_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(check_frame, text="Subtítulos", variable=self.vtt_var).pack(side="left", padx=(0, 15))
+        check_frame.grid(row=0, column=3, sticky="w", padx=20)
         self.aria2_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(check_frame, text="Usar aria2c", variable=self.aria2_var).pack(side="left", padx=(0, 15))
+        ctk.CTkCheckBox(check_frame, text="Usar aria2c", variable=self.aria2_var).pack(side="left")
+        infoAria2c = ctk.CTkLabel(check_frame, text="ℹ️", cursor="hand2")
+        infoAria2c.pack(side="left", padx=(0, 15))
+        CTkToolTip(infoAria2c, "Descarga más rápida usando múltiples conexiones.")
         self.resume_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(check_frame, text="Modo Resume", variable=self.resume_var).pack(side="left")
+        ctk.CTkCheckBox(check_frame, text="Modo Only Resume", variable=self.resume_var).pack(side="left")
+        infoResume = ctk.CTkLabel(check_frame, text="ℹ️", cursor="hand2")
+        infoResume.pack(side="left", padx=(0, 15))
+        CTkToolTip(infoResume, "Sólo descarga .part pendientes de descarga. No usar si se quiere descargar nuevos capítulos.")
 
         # Carpeta Output
         out_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
@@ -228,6 +318,9 @@ class TV3_GUI(ctk.CTk):
         self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.browse_btn = ctk.CTkButton(out_frame, text="📁", width=40, command=self.browse_folder)
         self.browse_btn.pack(side="left")
+        infoOutput = ctk.CTkLabel(out_frame, text="ℹ️", cursor="hand2")
+        infoOutput.pack(side="left", padx=(15, 0))
+        CTkToolTip(infoOutput, "Dentro de la carpeta indicada se generará otra carpeta con el nombre de la serie/programa a descargar.")
 
         # Botón Acción (solo Descargar Todo)
         act_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
@@ -424,13 +517,25 @@ class TV3_GUI(ctk.CTk):
                 
                 manifest_path = "manifest.json"
                 self.manifest_data = build_manifest(cids, manifest_path, workers=workers)
-                self.log_queue.put(("log", f"✅ Manifest generado: {len(self.manifest_data.get('items', []))} archivos"))
-                
+
+                diffitems = self.manifest_data.get("items", [])
+                video=0
+                subt=0
+                for item in diffitems:
+                    if item.get("type") == "mp4":
+                        video=video+1
+
+                    if item.get("type") == "vtt":
+                        subt=subt+1
+
+                self.log_queue.put(("log", f"✅ Manifest generado: {len(self.manifest_data.get('items', []))} archivos: {video} videos - {subt} subtitulos"))
+
                 # Extraer calidades disponibles
                 self.extract_available_qualities()
+                self.extract_available_vttlangs()
                 
                 self.after(0, lambda: self.info_label.configure(
-                    text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles", 
+                    text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles: {video} videos - {subt} subtitulos", 
                     text_color=("green", "lightgreen")
                 ))
                 self.progress_queue.put({"type": "info", "text": "✅ Programa cargado y listo para descargar"})
@@ -470,13 +575,46 @@ class TV3_GUI(ctk.CTk):
                 key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, 
                 reverse=True
             )
-            quality_list = ["Todas"] + sorted_qualities
+            quality_list = ["Todas"] + ["Ninguna (No Video)"] + sorted_qualities
             self.quality_combo.configure(values=quality_list, state="normal")
             self.quality_var.set("Todas")
             self.add_log(f"🎬 Calidades disponibles: {', '.join(sorted_qualities)}")
         else:
             self.quality_combo.configure(values=["Todas"], state="normal")
             self.add_log("⚠️ No se encontraron calidades específicas")
+    
+    def extract_available_vttlangs(self):
+        """Extraer calidades disponibles del manifest en memoria"""
+        try:
+            if not self.manifest_data:
+                return
+            
+            vttlangs = set()
+            for item in self.manifest_data.get("items", []):
+                if item.get("type") == "vtt":
+                    vttlang = item.get("quality", "")
+                    if vttlang:
+                        vttlangs.add(vttlang)
+            
+            self.available_vttlangs = vttlangs
+            self.after(0, self.update_vttlang_selector, vttlangs)
+        except Exception as e:
+            self.log_queue.put(("log", f"⚠️ No se pudieron extraer las calidades: {str(e)}"))
+    
+    def update_vttlang_selector(self, vttlangs):
+        if vttlangs:
+            sorted_vttlangs = sorted(
+                vttlangs, 
+                key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, 
+                reverse=True
+            )
+            vttlang_list = ["Todos"] + ["Ninguno (No Subs)"] + sorted_vttlangs
+            self.vttlang_combo.configure(values=vttlang_list, state="normal")
+            self.vttlang_var.set("Todos")
+            self.add_log(f"🎬 Subtítulos disponibles: {', '.join(sorted_vttlangs)}")
+        else:
+            self.vttlang_combo.configure(values=["Todos"], state="normal")
+            self.add_log("⚠️ No se encontraron subtítulos específicos")
     
     def start_download(self):
         if not self.program_info or not self.manifest_data:
@@ -498,20 +636,24 @@ class TV3_GUI(ctk.CTk):
                 quality_filter = self.quality_var.get()
                 if quality_filter == "Todas":
                     quality_filter = ""
-                include_vtt = self.vtt_var.get()
+                vttlang_filter = self.vttlang_var.get()
+                if vttlang_filter == "Todos":
+                    vttlang_filter = ""
                 
                 # Filtrar items según configuración
                 items = self.manifest_data.get("items", [])
                 filtered_items = []
                 
                 for item in items:
-                    # Filtrar por tipo (mp4 o vtt según config)
-                    if item.get("type") == "vtt" and not include_vtt:
-                        continue
                     
                     # Filtrar por calidad si es mp4
                     if item.get("type") == "mp4" and quality_filter:
                         if quality_filter not in item.get("quality", ""):
+                            continue
+							
+                    # Filtrar por calidad si es mp4
+                    if item.get("type") == "vtt" and vttlang_filter:
+                        if vttlang_filter not in item.get("quality", ""):
                             continue
                     
                     filtered_items.append(item)
@@ -683,7 +825,7 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
         while attempts <= max_retries:
             attempts += 1
             try:
-                params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": page}
+                params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": page, "tipus_contingut": "PPD"}
                 d = fetch_json("https://api.3cat.cat/videos", params=params)
                 item_list = d["resposta"]["items"]["item"]
                 if isinstance(item_list, dict):
@@ -777,7 +919,6 @@ def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=
         temporada = res.get("temporada")
         tcap = cid["tcap"]
         safe_name = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
-        safe_name_vtt = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
         
         local = []
         for mp in res["mp4s"]:
@@ -788,7 +929,7 @@ def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=
                 "temporada": temporada,
                 "temporada_capitol": tcap,
                 "title": title,
-                "name": safe_name,
+                "name": f"{safe_name} - {mp["label"]}",
                 "quality": mp["label"],
                 "link": mp["url"],
                 "file_name": fname,
