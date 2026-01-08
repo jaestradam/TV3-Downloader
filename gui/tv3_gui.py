@@ -244,9 +244,21 @@ class TV3_GUI(ctk.CTk):
         content_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
         content_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
+        self.tabs = ctk.CTkTabview(
+            content_frame,
+            width=1000,
+            height=600
+        )
+        self.tabs.pack(fill="both", expand=True)
+
+        tab_config = self.tabs.add("⚙️ Configuración")
+        tab_preview = self.tabs.add("📋 Vista previa")
+        tab_logs = self.tabs.add("📜 Logs")
+
+
         # --- SECCIÓN CONFIGURACIÓN ---
-        config_frame = ctk.CTkFrame(content_frame, corner_radius=10)
-        config_frame.pack(fill="x", pady=(0, 20))
+        config_frame = ctk.CTkFrame(tab_config, corner_radius=10)
+        config_frame.pack(fill="x", pady=20)
         
         ctk.CTkLabel(config_frame, text="⚙️ Configuración", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
         
@@ -273,14 +285,7 @@ class TV3_GUI(ctk.CTk):
         q_frame.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(q_frame, text="Calidad:", width=60, anchor="w").pack(side="left")
         self.quality_var = ctk.StringVar(value="Todas")
-        self.quality_combo = ctk.CTkComboBox(
-            q_frame, 
-            values=["Todas"], 
-            variable=self.quality_var, 
-            width=140, 
-            state="disabled",
-            command=self.on_quality_change
-        )
+        self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled", command=self.on_quality_change)
         self.quality_combo.pack(side="left")
 
         # Subtitulos
@@ -288,14 +293,7 @@ class TV3_GUI(ctk.CTk):
         s_frame.grid(row=0, column=1, sticky="w", padx=20)
         ctk.CTkLabel(s_frame, text="Subtitulos:", width=80, anchor="w").pack(side="left")
         self.vttlang_var = ctk.StringVar(value="Todos")
-        self.vttlang_combo = ctk.CTkComboBox(
-            s_frame, 
-            values=["Todos"], 
-            variable=self.vttlang_var, 
-            width=140, 
-            state="disabled",
-            command=self.on_vttlang_change
-        )
+        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled", command=self.on_vttlang_change)
         self.vttlang_combo.pack(side="left")
 
         # Workers
@@ -354,8 +352,8 @@ class TV3_GUI(ctk.CTk):
         self.download_btn.pack(fill="x")
 
         # --- SECCIÓN VISTA PREVIA ---
-        self.preview_frame = ctk.CTkFrame(content_frame, corner_radius=10)
-        self.preview_frame.pack(fill="both", expand=True, pady=(0, 20))
+        self.preview_frame = ctk.CTkFrame(tab_preview, corner_radius=10)
+        self.preview_frame.pack(fill="both", expand=True, pady=20)
         
         # Header Preview
         preview_header = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
@@ -387,7 +385,9 @@ class TV3_GUI(ctk.CTk):
         controls_frame.pack(fill="x", padx=15, pady=(0, 10))
         
         ctk.CTkButton(controls_frame, text="✓ Todos", width=100, command=self.select_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="✓ Filtrados", width=100, command=self.select_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="✗ Ninguno", width=100, command=self.deselect_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="✗ Filtrados", width=100, command=self.deselect_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="🔄 Invertir", width=100, command=self.invert_selection).pack(side="left", padx=5)
         
         # Botón para obtener tamaños
@@ -419,7 +419,7 @@ class TV3_GUI(ctk.CTk):
         
         # Crear Treeview con estilo personalizado
         style = ttk.Style()
-        style.theme_use("clam")
+        style.theme_use("default")
         
         # Configurar colores para modo oscuro
         style.configure("Treeview",
@@ -430,9 +430,10 @@ class TV3_GUI(ctk.CTk):
             font=('Segoe UI', 10)
         )
         style.configure("Treeview.Heading",
-            background="#1f538d",
+            background="#333333",
             foreground="white",
             borderwidth=1,
+            relief="flat",
             font=('Segoe UI', 10, 'bold')
         )
         style.map("Treeview",
@@ -491,8 +492,8 @@ class TV3_GUI(ctk.CTk):
         self.tree.bind("<space>", self.toggle_item_selection)
 
         # --- SECCIÓN LOGS ---
-        self.log_frame = ctk.CTkFrame(content_frame, corner_radius=10)
-        self.log_frame.pack(fill="both", expand=True)
+        self.log_frame = ctk.CTkFrame(tab_logs, corner_radius=10)
+        self.log_frame.pack(fill="both", expand=True, pady=20)
         
         # Header Logs
         log_header = ctk.CTkFrame(self.log_frame, fg_color="transparent")
@@ -701,12 +702,12 @@ class TV3_GUI(ctk.CTk):
             try:
                 total = len(self.all_items)
                 processed = 0
+                workers = self.workers_var.get()
                 
                 def fetch_size(item_data):
                     nonlocal processed
                     try:
                         url = item_data["item"]["link"]
-                        
                         # Intentar HEAD primero
                         response = SESSION.head(url, timeout=10, allow_redirects=True)
                         size = int(response.headers.get("Content-Length", 0))
@@ -726,7 +727,6 @@ class TV3_GUI(ctk.CTk):
                             if size == 0:
                                 content = response.content
                                 size = len(content)
-                        
                         # Actualizar item_data
                         item_data["tamaño_bytes"] = size
                         item_data["tamaño"] = format_size(size)
@@ -744,7 +744,7 @@ class TV3_GUI(ctk.CTk):
                         return False
                 
                 # Usar ThreadPoolExecutor para paralelizar
-                with ThreadPoolExecutor(max_workers=10) as ex:
+                with ThreadPoolExecutor(max_workers=workers) as ex:
                     futures = [ex.submit(fetch_size, item_data) for item_data in self.all_items]
                     for future in as_completed(futures):
                         try:
@@ -795,10 +795,22 @@ class TV3_GUI(ctk.CTk):
         for item_data in self.all_items:
             item_data["selected"] = True
         self.apply_filter()
+
+    def select_filter(self):
+        """Seleccionar los items filtrados"""
+        for iid, item_data in self.tree_items.items():
+            item_data["selected"] = True
+        self.apply_filter()
     
     def deselect_all(self):
         """Deseleccionar todos los items"""
         for item_data in self.all_items:
+            item_data["selected"] = False
+        self.apply_filter()
+
+    def deselect_filter(self):
+        """Deseleccionar los items filtrados"""
+        for iid, item_data in self.tree_items.items():
             item_data["selected"] = False
         self.apply_filter()
     
@@ -1121,7 +1133,6 @@ class TV3_GUI(ctk.CTk):
         # Contar seleccionados
         selected_count = sum(1 for item in self.all_items if item["selected"])
         self.add_log(f"✓ Filtros aplicados: {selected_count} elementos seleccionados")
-    
     def start_download(self):
         if not self.program_info or not self.manifest_data:
             messagebox.showwarning("Advertencia", "Primero busca un programa")
