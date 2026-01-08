@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 tv3_gui.py - Interfaz gráfica para TV3 GUI Downloader
-Versión sin CSV intermedio
+Versión con Vista Previa de Manifest
 """
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
+import tkinter as tk
 import threading
 import requests
 import queue
@@ -60,7 +61,6 @@ class QueueLogHandler(logging.Handler):
         msg = self.format(record)
         self.log_queue.put(("log", msg))
 
-
 # Configuración de CustomTkinter
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -101,7 +101,6 @@ class CTkToolTip:
         )
         label.pack(padx=10, pady=6)
 
-        # --- FORZAR cálculo real del tamaño ---
         tw.update_idletasks()
 
         tip_w = tw.winfo_width()
@@ -115,19 +114,15 @@ class CTkToolTip:
         screen_w = tw.winfo_screenwidth()
         screen_h = tw.winfo_screenheight()
 
-        # Posición preferida (derecha)
         x = wx + ww + 10
         y = wy + (wh // 2) - (tip_h // 3)
 
-        # 👉 Si se sale por la derecha → izquierda
         if x + tip_w > screen_w:
             x = wx - tip_w - 10
 
-        # 👉 Si se sale por arriba
         if y < 0:
             y = 10
 
-        # 👉 Si se sale por abajo
         if y + tip_h > screen_h:
             y = screen_h - tip_h - 10
 
@@ -141,13 +136,14 @@ class CTkToolTip:
             self.tipwindow.destroy()
             self.tipwindow = None
 
+
 class TV3_GUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         
         # Configuración de la ventana
         self.title("TV3 GUI Downloader")
-        self.geometry("900x850")
+        self.geometry("1100x900")
         
         # Queue para comunicación entre threads
         self.log_queue = queue.Queue()
@@ -164,6 +160,10 @@ class TV3_GUI(ctk.CTk):
         
         # Variables de UI
         self.logs_visible = False
+        self.preview_visible = False
+        
+        # Variables para la tabla
+        self.tree_items = {}  # {iid: item_data}
         
         # Crear interfaz
         self.create_widgets()
@@ -321,32 +321,13 @@ class TV3_GUI(ctk.CTk):
         infoOutput = ctk.CTkLabel(out_frame, text="ℹ️", cursor="hand2")
         infoOutput.pack(side="left", padx=(15, 0))
         CTkToolTip(infoOutput, "Dentro de la carpeta indicada se generará otra carpeta con el nombre de la serie/programa a descargar.")
-        # --- SECCIÓN VISTA PREVIA (NUEVA) ---
-        self.preview_frame = ctk.CTkFrame(content_frame, corner_radius=10)
-        self.preview_frame.pack(fill="both", expand=True, pady=(0, 20))
-        ctk.CTkLabel(self.preview_frame, text="🎬 Lista de archivos (Selecciona para filtrar)", 
-                     font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
 
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background="#2a2d2e", foreground="white", fieldbackground="#2a2d2e", borderwidth=0)
-        style.map("Treeview", background=[('selected', '#1f538d')])
-        style.configure("Treeview.Heading", background="#333333", foreground="white", relief="flat")
-
-        self.tree = ttk.Treeview(self.preview_frame, columns=("temp", "cap", "title", "quality", "size"), show="headings", height=8)
-        headers = {"temp": "Temp.", "cap": "Cap.", "title": "Título", "quality": "Calidad", "size": "Tamaño"}
-        for col, text in headers.items():
-            self.tree.heading(col, text=text, command=lambda _c=col: self.sort_column(_c, False))
-            self.tree.column(col, width=60 if col in ["temp", "cap"] else 100, anchor="center" if col != "title" else "w")
-        self.tree.column("title", width=350)
-        self.tree.pack(fill="both", expand=True, padx=15, pady=10)								  
-
-        # Botón Acción (solo Descargar Todo)
+        # Botón Acción
         act_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         act_frame.pack(fill="x", padx=15, pady=(5, 15))
         self.download_btn = ctk.CTkButton(
             act_frame, 
-            text="⬇️ Descargar Todo", 
+            text="⬇️ Descargar Seleccionados", 
             command=self.start_download, 
             height=40, 
             fg_color=("green", "darkgreen"), 
@@ -355,7 +336,122 @@ class TV3_GUI(ctk.CTk):
         )
         self.download_btn.pack(fill="x")
 
-        # --- SECCIÓN LOGS (Dentro del scrollable) ---
+        # --- SECCIÓN VISTA PREVIA ---
+        self.preview_frame = ctk.CTkFrame(content_frame, corner_radius=10)
+        self.preview_frame.pack(fill="both", expand=True, pady=(0, 20))
+        
+        # Header Preview
+        preview_header = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
+        preview_header.pack(fill="x", padx=15, pady=10)
+        
+        ctk.CTkLabel(
+            preview_header, 
+            text="📋 Vista Previa de Capítulos", 
+            font=ctk.CTkFont(size=16, weight="bold")
+        ).pack(side="left")
+        
+        self.toggle_preview_btn = ctk.CTkButton(
+            preview_header,
+            text="▶ Mostrar",
+            width=80,
+            height=24,
+            fg_color="transparent",
+            border_width=1,
+            text_color=("gray10", "gray90"),
+            command=self.toggle_preview
+        )
+        self.toggle_preview_btn.pack(side="right")
+        
+        # Controles de selección
+        self.preview_controls_container = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
+        
+        controls_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
+        controls_frame.pack(fill="x", padx=15, pady=(0, 10))
+        
+        ctk.CTkButton(controls_frame, text="✓ Todos", width=100, command=self.select_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="✗ Ninguno", width=100, command=self.deselect_all).pack(side="left", padx=5)
+        ctk.CTkButton(controls_frame, text="🔄 Invertir", width=100, command=self.invert_selection).pack(side="left", padx=5)
+        
+        self.selection_info = ctk.CTkLabel(controls_frame, text="Seleccionados: 0/0", font=ctk.CTkFont(size=12))
+        self.selection_info.pack(side="right", padx=15)
+        
+        # Tabla
+        self.preview_table_container = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
+        
+        # Crear Treeview con estilo personalizado
+        style = ttk.Style()
+        style.theme_use("clam")
+        
+        # Configurar colores para modo oscuro
+        style.configure("Treeview",
+            background="#2b2b2b",
+            foreground="white",
+            fieldbackground="#2b2b2b",
+            borderwidth=0,
+            font=('Segoe UI', 10)
+        )
+        style.configure("Treeview.Heading",
+            background="#1f538d",
+            foreground="white",
+            borderwidth=1,
+            font=('Segoe UI', 10, 'bold')
+        )
+        style.map("Treeview",
+            background=[('selected', '#1f538d')],
+            foreground=[('selected', 'white')]
+        )
+        
+        # Frame para tabla y scrollbar
+        table_frame = tk.Frame(self.preview_table_container, bg="#2b2b2b")
+        table_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        # Scrollbars
+        vsb = ttk.Scrollbar(table_frame, orient="vertical")
+        hsb = ttk.Scrollbar(table_frame, orient="horizontal")
+        
+        # Treeview
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=("sel", "temp", "cap", "titulo", "calidad", "tipo", "tamaño"),
+            show="headings",
+            height=15,
+            yscrollcommand=vsb.set,
+            xscrollcommand=hsb.set
+        )
+        
+        vsb.config(command=self.tree.yview)
+        hsb.config(command=self.tree.xview)
+        
+        # Configurar columnas
+        self.tree.heading("sel", text="✓")
+        self.tree.heading("temp", text="Temp")
+        self.tree.heading("cap", text="Cap")
+        self.tree.heading("titulo", text="Título")
+        self.tree.heading("calidad", text="Calidad")
+        self.tree.heading("tipo", text="Tipo")
+        self.tree.heading("tamaño", text="Tamaño")
+        
+        self.tree.column("sel", width=40, anchor="center")
+        self.tree.column("temp", width=60, anchor="center")
+        self.tree.column("cap", width=60, anchor="center")
+        self.tree.column("titulo", width=400, anchor="w")
+        self.tree.column("calidad", width=100, anchor="center")
+        self.tree.column("tipo", width=60, anchor="center")
+        self.tree.column("tamaño", width=100, anchor="e")
+        
+        # Empaquetar
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        
+        table_frame.grid_rowconfigure(0, weight=1)
+        table_frame.grid_columnconfigure(0, weight=1)
+        
+        # Bind para toggle selection
+        self.tree.bind("<Double-1>", self.toggle_item_selection)
+        self.tree.bind("<space>", self.toggle_item_selection)
+
+        # --- SECCIÓN LOGS ---
         self.log_frame = ctk.CTkFrame(content_frame, corner_radius=10)
         self.log_frame.pack(fill="both", expand=True)
         
@@ -383,26 +479,25 @@ class TV3_GUI(ctk.CTk):
         
         # Text widget
         self.log_text_container = ctk.CTkFrame(self.log_frame, fg_color="transparent")
-        #self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         
         self.log_text = ctk.CTkTextbox(self.log_text_container, height=300, wrap="word", font=ctk.CTkFont(family="Consolas", size=11))
         self.log_text.pack(fill="both", expand=True)
         
-        self.add_log("✅ Interfaz cargada - Versión sin CSV")
-        self.add_log("ℹ️ Busca un programa para comenzar")
-    # --- L車gica UI y Tablas ---
-    def sort_column(self, col, reverse):
-        l = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
-        try: l.sort(key=lambda t: int(t), reverse=reverse)
-        except: l.sort(reverse=reverse)
-        for index, (val, k) in enumerate(l): self.tree.move(k, '', index)
-        self.tree.heading(col, command=lambda: self.sort_column(col, not reverse))
+        self.add_log("✅ Interfaz cargada con Vista Previa")
+        self.add_log("ℹ️ Busca un programa para ver los capítulos disponibles")
 
-    def update_preview_table(self):
-        for i in self.tree.get_children(): self.tree.delete(i)
-        if not self.manifest_data: return
-        for item in self.manifest_data.get("items", []):
-            self.tree.insert("", "end", values=(item["temporada"], item["temporada_capitol"], item["title"], item["quality"], "N/D"))
+    def toggle_preview(self):
+        """Mostrar u ocultar la vista previa"""
+        if self.preview_visible:
+            self.preview_controls_container.pack_forget()
+            self.preview_table_container.pack_forget()
+            self.toggle_preview_btn.configure(text="▶ Mostrar")
+            self.preview_visible = False
+        else:
+            self.preview_controls_container.pack(fill="x", padx=15, pady=(0, 10))
+            self.preview_table_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+            self.toggle_preview_btn.configure(text="▼ Ocultar")
+            self.preview_visible = True
 
     def toggle_logs(self):
         """Mostrar u ocultar el cuadro de texto de logs"""
@@ -415,6 +510,105 @@ class TV3_GUI(ctk.CTk):
             self.toggle_log_btn.configure(text="▼ Ocultar")
             self.logs_visible = True
             self.log_text.see("end")
+
+    def populate_tree(self):
+        """Poblar la tabla con los items del manifest"""
+        # Limpiar tabla
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.tree_items.clear()
+        
+        if not self.manifest_data:
+            return
+        
+        items = self.manifest_data.get("items", [])
+        
+        for idx, item in enumerate(items):
+            temp = item.get("temporada", "?")
+            cap = item.get("temporada_capitol", "?")
+            titulo = item.get("title", "Sin título")
+            calidad = item.get("quality", "?")
+            tipo = item.get("type", "?").upper()
+            
+            # Tamaño (pendiente de implementar)
+            tamaño = "?"
+            
+            # Insertar en el tree
+            iid = self.tree.insert("", "end", values=(
+                "✓",  # Seleccionado por defecto
+                temp,
+                cap,
+                titulo,
+                calidad,
+                tipo,
+                tamaño
+            ))
+            
+            # Guardar referencia al item
+            self.tree_items[iid] = {
+                "item": item,
+                "selected": True
+            }
+        
+        self.update_selection_info()
+        self.add_log(f"📊 Cargados {len(items)} elementos en la vista previa")
+
+    def toggle_item_selection(self, event=None):
+        """Toggle selección de un item"""
+        selection = self.tree.selection()
+        if not selection:
+            return
+        
+        for iid in selection:
+            if iid in self.tree_items:
+                # Toggle estado
+                current = self.tree_items[iid]["selected"]
+                self.tree_items[iid]["selected"] = not current
+                
+                # Actualizar visual
+                values = list(self.tree.item(iid)["values"])
+                values[0] = "✓" if not current else ""
+                self.tree.item(iid, values=values)
+        
+        self.update_selection_info()
+
+    def select_all(self):
+        """Seleccionar todos los items"""
+        for iid in self.tree_items:
+            self.tree_items[iid]["selected"] = True
+            values = list(self.tree.item(iid)["values"])
+            values[0] = "✓"
+            self.tree.item(iid, values=values)
+        self.update_selection_info()
+
+    def deselect_all(self):
+        """Deseleccionar todos los items"""
+        for iid in self.tree_items:
+            self.tree_items[iid]["selected"] = False
+            values = list(self.tree.item(iid)["values"])
+            values[0] = ""
+            self.tree.item(iid, values=values)
+        self.update_selection_info()
+
+    def invert_selection(self):
+        """Invertir selección"""
+        for iid in self.tree_items:
+            current = self.tree_items[iid]["selected"]
+            self.tree_items[iid]["selected"] = not current
+            values = list(self.tree.item(iid)["values"])
+            values[0] = "✓" if not current else ""
+            self.tree.item(iid, values=values)
+        self.update_selection_info()
+
+    def update_selection_info(self):
+        """Actualizar contador de seleccionados"""
+        total = len(self.tree_items)
+        selected = sum(1 for data in self.tree_items.values() if data["selected"])
+        self.selection_info.configure(text=f"Seleccionados: {selected}/{total}")
+
+    def get_selected_items(self):
+        """Obtener lista de items seleccionados"""
+        return [data["item"] for data in self.tree_items.values() if data["selected"]]
 
     def add_log(self, message):
         """Añadir mensaje al log y autoscroll"""
@@ -556,7 +750,6 @@ class TV3_GUI(ctk.CTk):
                 for item in diffitems:
                     if item.get("type") == "mp4":
                         video=video+1
-
                     if item.get("type") == "vtt":
                         subt=subt+1
 
@@ -566,11 +759,17 @@ class TV3_GUI(ctk.CTk):
                 self.extract_available_qualities()
                 self.extract_available_vttlangs()
                 
+                # Poblar la tabla
+                self.after(0, self.populate_tree)
+                
+                # Mostrar vista previa automáticamente
+                if not self.preview_visible:
+                    self.after(0, self.toggle_preview)
+                
                 self.after(0, lambda: self.info_label.configure(
                     text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles: {video} videos - {subt} subtitulos", 
                     text_color=("green", "lightgreen")
                 ))
-                self.after(0, self.update_preview_table)
                 self.progress_queue.put({"type": "info", "text": "✅ Programa cargado y listo para descargar"})
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error: {str(e)}"))
@@ -617,7 +816,7 @@ class TV3_GUI(ctk.CTk):
             self.add_log("⚠️ No se encontraron calidades específicas")
     
     def extract_available_vttlangs(self):
-        """Extraer calidades disponibles del manifest en memoria"""
+        """Extraer idiomas de subtítulos disponibles"""
         try:
             if not self.manifest_data:
                 return
@@ -632,7 +831,7 @@ class TV3_GUI(ctk.CTk):
             self.available_vttlangs = vttlangs
             self.after(0, self.update_vttlang_selector, vttlangs)
         except Exception as e:
-            self.log_queue.put(("log", f"⚠️ No se pudieron extraer las calidades: {str(e)}"))
+            self.log_queue.put(("log", f"⚠️ No se pudieron extraer los idiomas: {str(e)}"))
     
     def update_vttlang_selector(self, vttlangs):
         if vttlangs:
@@ -654,62 +853,31 @@ class TV3_GUI(ctk.CTk):
             messagebox.showwarning("Advertencia", "Primero busca un programa")
             return
         
+        # Obtener items seleccionados
+        selected_items = self.get_selected_items()
+        
+        if not selected_items:
+            messagebox.showwarning("Advertencia", "No has seleccionado ningún elemento para descargar")
+            return
+        
         self.is_downloading = True
         self.disable_controls()
-        self.add_log("⬇️ Iniciando descarga...")
+        self.add_log(f"⬇️ Iniciando descarga de {len(selected_items)} elementos...")
         self.progress_bar.set(0)
         self.progress_info.configure(text="Estado: Descargando...")
-
-        # Obtener selección del Treeview
-        selected_indices = self.tree.selection()
-        selected_titles = [self.tree.item(i)['values'][2] for i in selected_indices]
-        print (selected_titles)
-
-		
+        
         def download_thread():
             try:
                 output_folder = self.output_entry.get()
                 workers = self.workers_var.get()
                 use_aria2 = self.aria2_var.get()
                 resume = self.resume_var.get()
-                quality_filter = self.quality_var.get()
-                if quality_filter == "Todas":
-                    quality_filter = ""
-                vttlang_filter = self.vttlang_var.get()
-                if vttlang_filter == "Todos":
-                    vttlang_filter = ""
                 
-                # Filtrar items según configuración
-                items = self.manifest_data.get("items", [])
-                filtered_items = []
-                
-                for item in items:
-                    
-                    # Si hay selecci車n en tabla, priorizarla
-                    if selected_titles and item["title"] not in selected_titles: continue
-
-                    # Filtrar por calidad si es mp4
-                    if item.get("type") == "mp4" and quality_filter:
-                        if quality_filter not in item.get("quality", ""):
-                            continue
-							
-                    # Filtrar por calidad si es mp4
-                    if item.get("type") == "vtt" and vttlang_filter:
-                        if vttlang_filter not in item.get("quality", ""):
-                            continue
-                    
-                    filtered_items.append(item)
-                
-                total_files = len(filtered_items)
+                total_files = len(selected_items)
                 self.log_queue.put(("log", f"📦 Total archivos a descargar: {total_files}"))
                 
-                if total_files == 0:
-                    self.log_queue.put(("log", "⚠️ No hay archivos que descargar con la configuración actual"))
-                    self.progress_queue.put({"type": "complete", "text": ""})
-                    return
-                
                 self.download_from_manifest(
-                    filtered_items, 
+                    selected_items, 
                     self.program_info.get("titol"), 
                     total_files, 
                     videos_folder=output_folder, 
@@ -971,7 +1139,7 @@ def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=
                 "temporada": temporada,
                 "temporada_capitol": tcap,
                 "title": title,
-                "name": f"{safe_name} - {mp["label"]}",
+                "name": f"{safe_name} - {mp['label']}",
                 "quality": mp["label"],
                 "link": mp["url"],
                 "file_name": fname,
@@ -986,7 +1154,7 @@ def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=
                 "temporada": temporada,
                 "temporada_capitol": tcap,
                 "title": title,
-                "name": f"{safe_name} - {vt["label"]}",
+                "name": f"{safe_name} - {vt['label']}",
                 "quality": vt["label"],
                 "link": vt["url"],
                 "file_name": fname,
@@ -1108,3 +1276,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                
