@@ -22,6 +22,7 @@ from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import logging
 from typing import Dict, Any
+from validate_translations import validate_all_translations
 
 # ----------------------------
 # Config / Logging
@@ -2619,9 +2620,52 @@ class StdoutRedirector:
         pass
 
 def main():
-    app = TV3_GUI()
-    app.mainloop()
+    """
+    Función principal que inicializa la aplicación con validación de traducciones
+    """
+    print("=" * 60)
+    print("🎬 TV3 GUI DOWNLOADER")
+    print("=" * 60)
+    
+    # 1️⃣ VALIDACIÓN DE TRADUCCIONES AL INICIO
+    print("\n🌍 Validando archivos de traducción...")
+    
+    validation_result = validate_all_translations(
+        translations_dir="translations",
+        base_lang="es",
+        strict=False  # No falla por claves extra (permite extensiones)
+    )
+    
+    # Comportamiento según resultado
+    if validation_result:
+        print("\n✅ Traducciones validadas correctamente")
+    else:
+        print("\n⚠️  Se encontraron problemas en las traducciones")
+        print("ℹ️  La aplicación continuará usando traducciones embebidas como fallback")
+        print("ℹ️  Revisa los mensajes anteriores para corregir los errores\n")
+        
+        # OPCIONAL: Preguntar si quiere continuar
+        # respuesta = input("¿Deseas continuar de todos modos? (s/n): ")
+        # if respuesta.lower() != 's':
+        #     print("❌ Aplicación cancelada por el usuario")
+        #     sys.exit(1)
+    
+    print("\n" + "=" * 60)
+    print("🚀 Iniciando interfaz gráfica...")
+    print("=" * 60 + "\n")
+    
+    # 2️⃣ INICIAR LA APLICACIÓN
+    try:
+        app = TV3_GUI()
+        app.mainloop()
+    except KeyboardInterrupt:
+        print("\n\n👋 Aplicación cerrada por el usuario")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n\n❌ Error fatal en la aplicación: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
-                
