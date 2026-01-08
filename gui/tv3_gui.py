@@ -52,6 +52,13 @@ def make_session(retries=5, backoff_factor=0.5, status_forcelist=(429, 500, 502,
 
 SESSION = make_session()
 
+def resource_path(relative):
+    try:
+        base_path = sys._MEIPASS   # PyInstaller
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative)
+
 class QueueLogHandler(logging.Handler):
     def __init__(self, log_queue):
         super().__init__()
@@ -140,7 +147,9 @@ class CTkToolTip:
 class TV3_GUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        
+
+        self.iconbitmap(resource_path("3catEM.ico"))
+
         # Configuración de la ventana
         self.title("TV3 GUI Downloader")
         self.geometry("1100x900")
@@ -157,10 +166,6 @@ class TV3_GUI(ctk.CTk):
         self.download_thread = None
         self.available_qualities = set()
         self.active_downloads = {}
-        
-        # Variables de UI
-        self.logs_visible = False
-        self.preview_visible = False
         
         # Variables para la tabla
         self.tree_items = {}  # {iid: item_data}
@@ -179,12 +184,33 @@ class TV3_GUI(ctk.CTk):
         self.update_logs()
         self.update_progress()
         self.update_file_progress()
+
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+    def on_closing(self):
+        """Manejar el cierre de la ventana"""
+        if self.is_downloading:
+            result = messagebox.askyesno(
+                "Descarga en curso",
+                "Hay una descarga en curso. ¿Estás seguro de que quieres salir?\n\nLos archivos parciales se guardarán y podrás reanudar más tarde.",
+                icon='warning'
+            )
+            if not result:
+                return
+    
+        # Limpiar recursos
+        try:
+            SESSION.close()
+        except:
+            pass
+    
+        self.destroy()
+
     def create_widgets(self):
         # ===== 1. TOP HEADER (FIJO) =====
         self.top_header = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray90", "gray20"))
         self.top_header.pack(side="top", fill="x", padx=0, pady=0)
-        
+    
         title_label = ctk.CTkLabel(
             self.top_header,
             text="🎬 TV3 GUI Downloader",
@@ -192,58 +218,29 @@ class TV3_GUI(ctk.CTk):
         )
         title_label.pack(pady=15)
 
-        # ===== 2. BOTTOM FOOTER (FIJO) =====
-        self.bottom_fixed_frame = ctk.CTkFrame(self, height=250, corner_radius=10, fg_color=("gray90", "gray16"))
-        self.bottom_fixed_frame.pack(side="bottom", fill="x", padx=20, pady=20)
-        self.bottom_fixed_frame.pack_propagate(False)
-
-        # Contenedor interno del footer
-        progress_container = ctk.CTkFrame(self.bottom_fixed_frame, fg_color="transparent")
-        progress_container.pack(fill="x", padx=20, pady=15)
-
-        # Título Sección Progreso
-        prog_header = ctk.CTkFrame(progress_container, fg_color="transparent")
-        prog_header.pack(fill="x", pady=(0, 5))
-        ctk.CTkLabel(prog_header, text="📊 Estado y Progreso", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left")
-
-        # Info de estado
-        self.progress_info = ctk.CTkLabel(
-            progress_container,
-            text="Estado: Esperando órdenes...",
-            anchor="w",
-            font=ctk.CTkFont(size=12)
+        help_btn = ctk.CTkButton(
+            self.top_header,
+            text="❓",
+            width=30,
+            height=30,
+            corner_radius=15,
+            command=self.show_help,
+            fg_color="transparent",
+            border_width=1
         )
-        self.progress_info.pack(fill="x", pady=(0, 5))
+        help_btn.pack(side="right", padx=15)
 
-        # Barra de progreso global
-        self.progress_bar = ctk.CTkProgressBar(progress_container)
-        self.progress_bar.pack(fill="x", pady=(0, 10))
-        self.progress_bar.set(0)
+        # ===== 2. CENTER BODY (SCROLLABLE) - AHORA INCLUYE TODO =====
+#        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        self.main_scroll = ctk.CTkFrame(self, fg_color="transparent")
 
-        # Lista de descargas activas
-        self.downloads_frame = ctk.CTkScrollableFrame(
-            progress_container,
-            height=150, 
-            fg_color=("gray95", "gray10"),
-            label_text="⚡ Descargas Activas"
-        )
-        self.downloads_frame.pack(fill="x", pady=(5, 0))
-        
-        self.no_downloads_label = ctk.CTkLabel(
-            self.downloads_frame,
-            text="No hay descargas activas",
-            text_color=("gray50", "gray60")
-        )
-        self.no_downloads_label.pack(pady=20)
-
-        # ===== 3. CENTER BODY (SCROLLABLE) =====
-        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.main_scroll.pack(side="top", fill="both", expand=True, padx=0, pady=0)
-        
+    
         # Frame interno para márgenes
         content_frame = ctk.CTkFrame(self.main_scroll, fg_color="transparent")
         content_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
+        # TABS - AHORA CON 4 PESTAÑAS
         self.tabs = ctk.CTkTabview(
             content_frame,
             width=1000,
@@ -252,34 +249,40 @@ class TV3_GUI(ctk.CTk):
         self.tabs.pack(fill="both", expand=True)
 
         tab_config = self.tabs.add("⚙️ Configuración")
-        tab_preview = self.tabs.add("📋 Vista previa")
+        tab_preview = self.tabs.add("📋 Lista capítulos a descargar")
+        tab_progress = self.tabs.add("📊 Progreso")  # ← NUEVA PESTAÑA
         tab_logs = self.tabs.add("📜 Logs")
 
-
-        # --- SECCIÓN CONFIGURACIÓN ---
+        # ========================================
+        # TAB 1: CONFIGURACIÓN
+        # ========================================
         config_frame = ctk.CTkFrame(tab_config, corner_radius=10)
         config_frame.pack(fill="x", pady=20)
-        
+    
         ctk.CTkLabel(config_frame, text="⚙️ Configuración", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
-        
+    
         # Búsqueda
         input_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         input_frame.pack(fill="x", padx=15, pady=5)
-        
-        ctk.CTkLabel(input_frame, text="Programa (nombonic):", width=140, anchor="w").pack(side="left")
+    
+        ctk.CTkLabel(input_frame, text="Programa:", width=80, anchor="w").pack(side="left")
+        infoNombonic = ctk.CTkLabel(input_frame, text="ℹ️", cursor="hand2")
+        infoNombonic.pack(side="left", padx=(0, 15))
+        CTkToolTip(infoNombonic, "El nombre del programa se obtiene de la URL de 3cat.\nPor ejemplo, para Dr.Slump: https://www.3cat.cat/3cat/dr-slump/ tenemos que poner '''dr-slump'''.\nPara Plats Bruts: https://www.3cat.cat/3cat/plats-bruts/ tenemos que poner plats-bruts.")
         self.program_entry = ctk.CTkEntry(input_frame, placeholder_text="ej: dr-slump")
         self.program_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
+        self.program_entry.bind("<Return>", lambda e: self.search_program())
+    
         self.search_btn = ctk.CTkButton(input_frame, text="🔍 Buscar", width=100, command=self.search_program)
         self.search_btn.pack(side="left")
-        
+    
         self.info_label = ctk.CTkLabel(config_frame, text="", text_color=("gray50", "gray60"), anchor="w")
         self.info_label.pack(fill="x", padx=15, pady=2)
 
         # Opciones Grid
         opts_grid = ctk.CTkFrame(config_frame, fg_color="transparent")
         opts_grid.pack(fill="x", padx=15, pady=10)
-        
+    
         # Calidad
         q_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
         q_frame.grid(row=0, column=0, sticky="w")
@@ -351,45 +354,36 @@ class TV3_GUI(ctk.CTk):
         )
         self.download_btn.pack(fill="x")
 
-        # --- SECCIÓN VISTA PREVIA ---
+        # ========================================
+        # TAB 2: VISTA PREVIA
+        # ========================================
         self.preview_frame = ctk.CTkFrame(tab_preview, corner_radius=10)
         self.preview_frame.pack(fill="both", expand=True, pady=20)
-        
+    
         # Header Preview
         preview_header = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
         preview_header.pack(fill="x", padx=15, pady=10)
-        
+    
         ctk.CTkLabel(
             preview_header, 
             text="📋 Vista Previa de Capítulos", 
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
-        
-        self.toggle_preview_btn = ctk.CTkButton(
-            preview_header,
-            text="▶ Mostrar",
-            width=80,
-            height=24,
-            fg_color="transparent",
-            border_width=1,
-            text_color=("gray10", "gray90"),
-            command=self.toggle_preview
-        )
-        self.toggle_preview_btn.pack(side="right")
-        
+    
         # Controles de selección
         self.preview_controls_container = ctk.CTkFrame(self.preview_frame, fg_color="transparent")
-        
+        self.preview_controls_container.pack(fill="x", padx=15, pady=(0, 10))
+
         # Fila 1: Botones de selección
         controls_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         controls_frame.pack(fill="x", padx=15, pady=(0, 10))
-        
+    
         ctk.CTkButton(controls_frame, text="✓ Todos", width=100, command=self.select_all).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="✓ Filtrados", width=100, command=self.select_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="✗ Ninguno", width=100, command=self.deselect_all).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="✗ Filtrados", width=100, command=self.deselect_filter).pack(side="left", padx=5)
         ctk.CTkButton(controls_frame, text="🔄 Invertir", width=100, command=self.invert_selection).pack(side="left", padx=5)
-        
+    
         # Botón para obtener tamaños
         self.fetch_sizes_btn = ctk.CTkButton(
             controls_frame, 
@@ -399,33 +393,34 @@ class TV3_GUI(ctk.CTk):
             fg_color=("blue", "darkblue")
         )
         self.fetch_sizes_btn.pack(side="left", padx=5)
-        
+    
         self.selection_info = ctk.CTkLabel(controls_frame, text="Seleccionados: 0/0", font=ctk.CTkFont(size=12))
         self.selection_info.pack(side="right", padx=15)
-        
+    
         # Fila 2: Filtro de búsqueda
         filter_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         filter_frame.pack(fill="x", padx=15, pady=(0, 10))
-        
+    
         ctk.CTkLabel(filter_frame, text="🔍 Filtrar:", width=60, anchor="w").pack(side="left", padx=(0, 5))
         self.filter_entry = ctk.CTkEntry(filter_frame, placeholder_text="Buscar por título, temporada, capítulo...")
         self.filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
-        
-        ctk.CTkButton(filter_frame, text="❌ Limpiar", width=80, command=self.clear_filter).pack(side="left", padx=5)
-        
+    
+        ctk.CTkButton(filter_frame, text="✖ Limpiar", width=80, command=self.clear_filter).pack(side="left", padx=5)
+    
         # Tabla
         self.preview_table_container = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
-        
+        self.preview_table_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
         # Crear Treeview con estilo personalizado
         style = ttk.Style()
         style.theme_use("default")
-        
+    
         # Configurar colores para modo oscuro
         style.configure("Treeview",
-            background="#2b2b2b",
+            background="gray10", #("gray95", "gray10")
             foreground="white",
-            fieldbackground="#2b2b2b",
+            fieldbackground="gray10",
             borderwidth=0,
             font=('Segoe UI', 10)
         )
@@ -440,15 +435,30 @@ class TV3_GUI(ctk.CTk):
             background=[('selected', '#1f538d')],
             foreground=[('selected', 'white')]
         )
-        
+    
         # Frame para tabla y scrollbar
         table_frame = tk.Frame(self.preview_table_container, bg="#2b2b2b")
         table_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        
+    
         # Scrollbars
-        vsb = ttk.Scrollbar(table_frame, orient="vertical")
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal")
-        
+        vsb = ctk.CTkScrollbar(
+            table_frame,
+            orientation="vertical",
+            width=16,
+            fg_color="transparent",
+            button_color="#444444",
+            button_hover_color="#666666"
+        )
+
+        hsb = ctk.CTkScrollbar(
+            table_frame,
+            orientation="horizontal",
+            height=16,
+            fg_color="transparent",
+            button_color="#444444",
+            button_hover_color="#666666"
+        )
+
         # Treeview
         self.tree = ttk.Treeview(
             table_frame,
@@ -458,10 +468,10 @@ class TV3_GUI(ctk.CTk):
             yscrollcommand=vsb.set,
             xscrollcommand=hsb.set
         )
-        
-        vsb.config(command=self.tree.yview)
-        hsb.config(command=self.tree.xview)
-        
+    
+        vsb.configure(command=self.tree.yview)
+        hsb.configure(command=self.tree.xview)
+    
         # Configurar columnas
         self.tree.heading("sel", text="✓", command=lambda: self.sort_by_column("sel"))
         self.tree.heading("temp", text="Temp", command=lambda: self.sort_by_column("temp"))
@@ -470,7 +480,7 @@ class TV3_GUI(ctk.CTk):
         self.tree.heading("calidad", text="Calidad", command=lambda: self.sort_by_column("calidad"))
         self.tree.heading("tipo", text="Tipo", command=lambda: self.sort_by_column("tipo"))
         self.tree.heading("tamaño", text="Tamaño", command=lambda: self.sort_by_column("tamaño"))
-        
+    
         self.tree.column("sel", width=40, anchor="center")
         self.tree.column("temp", width=60, anchor="center")
         self.tree.column("cap", width=60, anchor="center")
@@ -478,78 +488,173 @@ class TV3_GUI(ctk.CTk):
         self.tree.column("calidad", width=100, anchor="center")
         self.tree.column("tipo", width=60, anchor="center")
         self.tree.column("tamaño", width=100, anchor="e")
-        
+    
         # Empaquetar
         self.tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
         hsb.grid(row=1, column=0, sticky="ew")
-        
+    
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
-        
+    
         # Bind para toggle selection
         self.tree.bind("<Double-1>", self.toggle_item_selection)
         self.tree.bind("<space>", self.toggle_item_selection)
 
-        # --- SECCIÓN LOGS ---
+        # ========================================
+        # TAB 3: PROGRESO (ANTES ERA FOOTER)
+        # ========================================
+        progress_main_frame = ctk.CTkFrame(tab_progress, corner_radius=10)
+        progress_main_frame.pack(fill="both", expand=True, pady=20)
+
+        # Contenedor interno del progreso
+        progress_container = ctk.CTkFrame(progress_main_frame, fg_color="transparent")
+        progress_container.pack(fill="both", expand=True, padx=20, pady=15)
+
+        # Título Sección Progreso
+        prog_header = ctk.CTkFrame(progress_container, fg_color="transparent")
+        prog_header.pack(fill="x", pady=(0, 15))
+        ctk.CTkLabel(
+            prog_header, 
+            text="📊 Estado y Progreso", 
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(side="left")
+
+        # Info de estado
+        self.progress_info = ctk.CTkLabel(
+            progress_container,
+            text="Estado: Esperando órdenes...",
+            anchor="w",
+            font=ctk.CTkFont(size=13)
+        )
+        self.progress_info.pack(fill="x", pady=(0, 10))
+
+        # Barra de progreso global
+        self.progress_bar = ctk.CTkProgressBar(progress_container, height=20)
+        self.progress_bar.pack(fill="x", pady=(0, 20))
+        self.progress_bar.set(0)
+
+        # Lista de descargas activas
+        self.downloads_frame = ctk.CTkScrollableFrame(
+            progress_container,
+            height=400,  # Más altura al estar en una pestaña
+            fg_color=("gray95", "gray10"),
+            label_text="⚡ Descargas Activas"
+        )
+        self.downloads_frame.pack(fill="both", expand=True, pady=(5, 0))
+    
+        self.no_downloads_label = ctk.CTkLabel(
+            self.downloads_frame,
+            text="No hay descargas activas",
+            text_color=("gray50", "gray60"),
+            font=ctk.CTkFont(size=13)
+        )
+        self.no_downloads_label.pack(pady=40)
+
+        # ========================================
+        # TAB 4: LOGS
+        # ========================================
         self.log_frame = ctk.CTkFrame(tab_logs, corner_radius=10)
         self.log_frame.pack(fill="both", expand=True, pady=20)
-        
+    
         # Header Logs
         log_header = ctk.CTkFrame(self.log_frame, fg_color="transparent")
         log_header.pack(fill="x", padx=15, pady=10)
-        
+    
         ctk.CTkLabel(
             log_header, 
             text="📋 Registro de actividad", 
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
-        
-        self.toggle_log_btn = ctk.CTkButton(
-            log_header,
-            text="▶ Mostrar",
-            width=80,
-            height=24,
-            fg_color="transparent",
-            border_width=1,
-            text_color=("gray10", "gray90"),
-            command=self.toggle_logs
-        )
-        self.toggle_log_btn.pack(side="right")
-        
+    
         # Text widget
         self.log_text_container = ctk.CTkFrame(self.log_frame, fg_color="transparent")
-        
-        self.log_text = ctk.CTkTextbox(self.log_text_container, height=300, wrap="word", font=ctk.CTkFont(family="Consolas", size=11))
+        self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+        self.log_text = ctk.CTkTextbox(
+            self.log_text_container, 
+            height=400,
+            wrap="word", 
+            font=ctk.CTkFont(family="Consolas", size=11)
+        )
         self.log_text.pack(fill="both", expand=True)
-        
+    
         self.add_log("✅ Interfaz cargada con Vista Previa")
         self.add_log("ℹ️ Busca un programa para ver los capítulos disponibles")
 
-    def toggle_preview(self):
-        """Mostrar u ocultar la vista previa"""
-        if self.preview_visible:
-            self.preview_controls_container.pack_forget()
-            self.preview_table_container.pack_forget()
-            self.toggle_preview_btn.configure(text="▶ Mostrar")
-            self.preview_visible = False
-        else:
-            self.preview_controls_container.pack(fill="x", padx=15, pady=(0, 10))
-            self.preview_table_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-            self.toggle_preview_btn.configure(text="▼ Ocultar")
-            self.preview_visible = True
+    def show_help(self):
+        """Mostrar ventana de ayuda"""
+        help_window = ctk.CTkToplevel(self)
+        help_window.title("Ayuda - TV3 GUI Downloader")
+        help_window.geometry("600x500")
+        help_window.transient(self)
+        help_window.grab_set()
+    
+        # Contenido
+        text = ctk.CTkTextbox(help_window, wrap="word", font=ctk.CTkFont(size=12))
+        text.pack(fill="both", expand=True, padx=20, pady=20)
+    
+        help_text = """
+🎬 TV3 GUI DOWNLOADER - GUÍA RÁPIDA
 
-    def toggle_logs(self):
-        """Mostrar u ocultar el cuadro de texto de logs"""
-        if self.logs_visible:
-            self.log_text_container.pack_forget()
-            self.toggle_log_btn.configure(text="▶ Mostrar")
-            self.logs_visible = False
-        else:
-            self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-            self.toggle_log_btn.configure(text="▼ Ocultar")
-            self.logs_visible = True
-            self.log_text.see("end")
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 CÓMO OBTENER EL NOMBRE DEL PROGRAMA:
+
+1. Ve a https://www.3cat.cat/
+2. Busca tu programa/serie favorita
+3. Copia el nombre de la URL después de "/3cat/"
+   
+   Ejemplos:
+   • https://www.3cat.cat/3cat/dr-slump/ → "dr-slump"
+   • https://www.3cat.cat/3cat/plats-bruts/ → "plats-bruts"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⚙️ OPCIONES:
+
+• Calidad: Selecciona la resolución del vídeo
+• Subtítulos: Elige el idioma de subtítulos
+• Workers: Número de descargas simultáneas (más = más rápido)
+• aria2c: Descarga ultra-rápida (requiere tener aria2c instalado)
+• Only Resume: Solo continúa descargas interrumpidas
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+⌨️ ATAJOS DE TECLADO:
+
+• Ctrl+A: Seleccionar todos
+• Ctrl+D: Deseleccionar todos
+• Ctrl+I: Invertir selección
+• Ctrl+F: Buscar/Filtrar
+• F5: Refrescar programa actual
+• Enter: Buscar programa (en el campo de búsqueda)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+💡 CONSEJOS:
+
+• Usa "Obtener Tamaños" para ver el espacio necesario
+• Filtra por temporada/capítulo para descargas específicas
+• Los archivos .part se pueden reanudar activando "Only Resume"
+• Si falla la descarga, reduce el número de Workers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📧 ¿Problemas? Revisa los logs en la pestaña correspondiente.
+"""
+    
+        text.insert("1.0", help_text)
+        text.configure(state="disabled")
+    
+        # Botón cerrar
+        close_btn = ctk.CTkButton(
+            help_window,
+            text="Cerrar",
+            command=help_window.destroy,
+            width=100
+        )
+        close_btn.pack(pady=(0, 20))
 
     def populate_tree(self):
         """Poblar la tabla con los items del manifest"""
@@ -843,9 +948,7 @@ class TV3_GUI(ctk.CTk):
         """Añadir mensaje al log y autoscroll"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
-        
-        if self.logs_visible:
-            self.log_text.see("end")
+        self.log_text.see("end")
     
     def update_logs(self):
         try:
@@ -951,6 +1054,9 @@ class TV3_GUI(ctk.CTk):
             return
         
         self.disable_controls()
+
+        self.search_btn.configure(text="⏳ Buscando...")
+
         self.add_log(f"🔍 Buscando programa: {program_name}")
         self.progress_info.configure(text="Estado: Buscando programa y generando manifest...")
         
@@ -991,21 +1097,19 @@ class TV3_GUI(ctk.CTk):
                 # Poblar la tabla
                 self.after(0, self.populate_tree)
                 
-                # Mostrar vista previa automáticamente
-                if not self.preview_visible:
-                    self.after(0, self.toggle_preview)
-                
                 self.after(0, lambda: self.info_label.configure(
                     text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles: {video} videos - {subt} subtitulos", 
                     text_color=("green", "lightgreen")
                 ))
                 self.progress_queue.put({"type": "info", "text": "✅ Programa cargado y listo para descargar"})
+                self.after(0, lambda: self.search_btn.configure(text="🔍 Buscar"))
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error: {str(e)}"))
                 self.program_info = None
                 self.manifest_data = None
                 self.after(0, lambda: self.info_label.configure(text="❌ Programa no encontrado", text_color=("red", "lightcoral")))
                 self.progress_queue.put({"type": "error", "text": str(e)})
+                self.after(0, lambda: self.search_btn.configure(text="🔍 Buscar"))
             finally:
                 self.after(0, self.enable_controls)
         
