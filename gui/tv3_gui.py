@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 tv3_gui.py - Interfaz gráfica para TV3 GUI Downloader
-Requiere: customtkinter, pillow (además de las dependencias del script original)
-Instalación: pip install customtkinter pillow
+Versión sin CSV intermedio
 """
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading
+import requests
 import queue
 import sys
 import re
@@ -15,22 +15,41 @@ import time
 import os
 from datetime import datetime
 import json
-import csv
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-# Importar el script original (asumiendo que está en el mismo directorio)
-try:
-    from tv3_cli import (
-        logger,
-        SESSION
-    )
-except ImportError:
-    print("Error: No se puede importar tv3_cli.py")
-    print("Asegúrate de que tv3_cli.py está en el mismo directorio")
-    sys.exit(1)
-
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 import logging
+
+# ----------------------------
+# Config / Logging
+# ----------------------------
+LOGFILE = "tv3_gui_debug.log"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger("TV3")
+file_handler = logging.FileHandler(LOGFILE, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+logger.addHandler(file_handler)
+
+def make_session(retries=5, backoff_factor=0.5, status_forcelist=(429, 500, 502, 503, 504)):
+    s = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods=frozenset(['GET','POST','HEAD'])
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    s.headers.update({'User-Agent': 'Mozilla/5.0 (compatible; TV3enmassa/8.1-pro)'})
+    s.trust_env = False
+    return s
+
+SESSION = make_session()
 
 class QueueLogHandler(logging.Handler):
     def __init__(self, log_queue):
@@ -62,13 +81,14 @@ class TV3_GUI(ctk.CTk):
         
         # Variables
         self.program_info = None
+        self.manifest_data = None
         self.is_downloading = False
         self.download_thread = None
         self.available_qualities = set()
         self.active_downloads = {}
         
         # Variables de UI
-        self.logs_visible = True
+        self.logs_visible = False
         
         # Crear interfaz
         self.create_widgets()
@@ -83,13 +103,6 @@ class TV3_GUI(ctk.CTk):
         self.update_file_progress()
         
     def create_widgets(self):
-        """
-        Layout:
-        1. TOP FIJO: Título
-        2. BOTTOM FIJO: Progreso
-        3. CENTER SCROLLABLE: Configuración + Logs
-        """
-        
         # ===== 1. TOP HEADER (FIJO) =====
         self.top_header = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray90", "gray20"))
         self.top_header.pack(side="top", fill="x", padx=0, pady=0)
@@ -100,18 +113,11 @@ class TV3_GUI(ctk.CTk):
             font=ctk.CTkFont(size=24, weight="bold")
         )
         title_label.pack(pady=15)
-        
-        # Separador visual debajo del título
-        #ctk.CTkFrame(self, height=2, fg_color=("gray60", "gray40")).pack(side="top", fill="x")
-
 
         # ===== 2. BOTTOM FOOTER (FIJO) =====
-        # Empaquetamos esto con side="bottom" antes que el scrollable para asegurar su posición
-        self.bottom_fixed_frame = ctk.CTkFrame(self, corner_radius=10, fg_color=("gray90", "gray16"))
-        self.bottom_fixed_frame.pack(side="bottom", fill="x", padx=25, pady=25)
-        
-        # Separador visual encima del footer
-        #ctk.CTkFrame(self.bottom_fixed_frame, height=2, fg_color=("gray60", "gray40")).pack(side="top", fill="x")
+        self.bottom_fixed_frame = ctk.CTkFrame(self, height=250, corner_radius=10, fg_color=("gray90", "gray16"))
+        self.bottom_fixed_frame.pack(side="bottom", fill="x", padx=20, pady=20)
+        self.bottom_fixed_frame.pack_propagate(False)
 
         # Contenedor interno del footer
         progress_container = ctk.CTkFrame(self.bottom_fixed_frame, fg_color="transparent")
@@ -152,9 +158,7 @@ class TV3_GUI(ctk.CTk):
         )
         self.no_downloads_label.pack(pady=20)
 
-
         # ===== 3. CENTER BODY (SCROLLABLE) =====
-        # Ocupa el espacio restante entre el Header y el Footer
         self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         self.main_scroll.pack(side="top", fill="both", expand=True, padx=0, pady=0)
         
@@ -163,7 +167,7 @@ class TV3_GUI(ctk.CTk):
         content_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         # --- SECCIÓN CONFIGURACIÓN ---
-        config_frame = ctk.CTkFrame(content_frame)
+        config_frame = ctk.CTkFrame(content_frame, corner_radius=10)
         config_frame.pack(fill="x", pady=(0, 20))
         
         ctk.CTkLabel(config_frame, text="⚙️ Configuración", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
@@ -206,8 +210,8 @@ class TV3_GUI(ctk.CTk):
         self.workers_slider.configure(command=lambda v: self.workers_label.configure(text=str(int(v))))
 
         # Checks
-        check_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
-        check_frame.pack(fill="x", padx=15, pady=5)
+        check_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
+        check_frame.grid(row=0, column=2, sticky="w", padx=20)
         self.vtt_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(check_frame, text="Subtítulos", variable=self.vtt_var).pack(side="left", padx=(0, 15))
         self.aria2_var = ctk.BooleanVar(value=False)
@@ -225,16 +229,22 @@ class TV3_GUI(ctk.CTk):
         self.browse_btn = ctk.CTkButton(out_frame, text="📁", width=40, command=self.browse_folder)
         self.browse_btn.pack(side="left")
 
-        # Botones Acción
+        # Botón Acción (solo Descargar Todo)
         act_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         act_frame.pack(fill="x", padx=15, pady=(5, 15))
-        self.list_btn = ctk.CTkButton(act_frame, text="📋 Generar Lista", command=self.generate_list, height=35)
-        self.list_btn.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.download_btn = ctk.CTkButton(act_frame, text="⬇️ Descargar Todo", command=self.start_download, height=35, fg_color=("green", "darkgreen"), hover_color=("darkgreen", "green"))
-        self.download_btn.pack(side="left", fill="x", expand=True)
+        self.download_btn = ctk.CTkButton(
+            act_frame, 
+            text="⬇️ Descargar Todo", 
+            command=self.start_download, 
+            height=40, 
+            fg_color=("green", "darkgreen"), 
+            hover_color=("darkgreen", "green"),
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.download_btn.pack(fill="x")
 
         # --- SECCIÓN LOGS (Dentro del scrollable) ---
-        self.log_frame = ctk.CTkFrame(content_frame)
+        self.log_frame = ctk.CTkFrame(content_frame, corner_radius=10)
         self.log_frame.pack(fill="both", expand=True)
         
         # Header Logs
@@ -243,13 +253,13 @@ class TV3_GUI(ctk.CTk):
         
         ctk.CTkLabel(
             log_header, 
-            text="📝 Registro de actividad", 
+            text="📋 Registro de actividad", 
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
         
         self.toggle_log_btn = ctk.CTkButton(
             log_header,
-            text="▼ Ocultar",
+            text="▶ Mostrar",
             width=80,
             height=24,
             fg_color="transparent",
@@ -261,23 +271,21 @@ class TV3_GUI(ctk.CTk):
         
         # Text widget
         self.log_text_container = ctk.CTkFrame(self.log_frame, fg_color="transparent")
-        self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        #self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
         
         self.log_text = ctk.CTkTextbox(self.log_text_container, height=300, wrap="word", font=ctk.CTkFont(family="Consolas", size=11))
         self.log_text.pack(fill="both", expand=True)
         
-        self.add_log("✅ Interfaz cargada")
-        self.add_log("⬆️ Header Fijo | ↕️ Config y Logs Scrollable | ⬇️ Footer Fijo")
+        self.add_log("✅ Interfaz cargada - Versión sin CSV")
+        self.add_log("ℹ️ Busca un programa para comenzar")
 
     def toggle_logs(self):
         """Mostrar u ocultar el cuadro de texto de logs"""
         if self.logs_visible:
-            # Ocultar
             self.log_text_container.pack_forget()
             self.toggle_log_btn.configure(text="▶ Mostrar")
             self.logs_visible = False
         else:
-            # Mostrar
             self.log_text_container.pack(fill="both", expand=True, padx=15, pady=(0, 15))
             self.toggle_log_btn.configure(text="▼ Ocultar")
             self.logs_visible = True
@@ -288,11 +296,8 @@ class TV3_GUI(ctk.CTk):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         
-        # Auto-scroll to bottom si está visible
         if self.logs_visible:
             self.log_text.see("end")
-    
-    # ... RESTO DE MÉTODOS LÓGICOS (Igual que antes) ...
     
     def update_logs(self):
         try:
@@ -383,13 +388,11 @@ class TV3_GUI(ctk.CTk):
     
     def disable_controls(self):
         self.search_btn.configure(state="disabled")
-        self.list_btn.configure(state="disabled")
         self.download_btn.configure(state="disabled")
         self.program_entry.configure(state="disabled")
     
     def enable_controls(self):
         self.search_btn.configure(state="normal")
-        self.list_btn.configure(state="normal")
         self.download_btn.configure(state="normal")
         self.program_entry.configure(state="normal")
     
@@ -401,65 +404,60 @@ class TV3_GUI(ctk.CTk):
         
         self.disable_controls()
         self.add_log(f"🔍 Buscando programa: {program_name}")
+        self.progress_info.configure(text="Estado: Buscando programa y generando manifest...")
         
         def search_thread():
             try:
+                # Obtener info del programa
                 info = obtener_program_info(program_name)
                 self.program_info = info
                 self.log_queue.put(("log", f"✅ Programa encontrado: {info.get('titol')}"))
                 self.log_queue.put(("log", f"📺 ID: {info.get('id')}"))
-                self.after(0, lambda: self.info_label.configure(text=f"📺 {info.get('titol')} (ID: {info.get('id')})", text_color=("green", "lightgreen")))
+                
+                # Generar manifest automáticamente
+                self.log_queue.put(("log", "📄 Obteniendo capítulos y generando manifest..."))
+                program_id = info.get("id")
+                workers = self.workers_var.get()
+                
+                cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
+                self.log_queue.put(("log", f"📊 Total capítulos encontrados: {len(cids)}"))
+                
+                manifest_path = "manifest.json"
+                self.manifest_data = build_manifest(cids, manifest_path, workers=workers)
+                self.log_queue.put(("log", f"✅ Manifest generado: {len(self.manifest_data.get('items', []))} archivos"))
+                
+                # Extraer calidades disponibles
+                self.extract_available_qualities()
+                
+                self.after(0, lambda: self.info_label.configure(
+                    text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles", 
+                    text_color=("green", "lightgreen")
+                ))
+                self.progress_queue.put({"type": "info", "text": "✅ Programa cargado y listo para descargar"})
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error: {str(e)}"))
                 self.program_info = None
+                self.manifest_data = None
                 self.after(0, lambda: self.info_label.configure(text="❌ Programa no encontrado", text_color=("red", "lightcoral")))
-            finally:
-                self.after(0, self.enable_controls)
-        threading.Thread(target=search_thread, daemon=True).start()
-    
-    def generate_list(self):
-        if not self.program_info:
-            messagebox.showwarning("Advertencia", "Primero busca un programa")
-            return
-        self.disable_controls()
-        self.add_log("📋 Generando lista de capítulos...")
-        self.progress_info.configure(text="Estado: Extrayendo capítulos...")
-        
-        def generate_thread():
-            try:
-                program_id = self.program_info.get("id")
-                workers = self.workers_var.get()
-                quality = self.quality_var.get()
-                include_vtt = self.vtt_var.get()
-                quality_filter = "" if quality == "Todas" else quality
-                
-                self.log_queue.put(("log", "🔄 Obteniendo IDs de capítulos..."))
-                cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
-                self.log_queue.put(("log", f"📊 Total capítulos encontrados: {len(cids)}"))
-                self.log_queue.put(("log", "📝 Extrayendo metadatos..."))
-                
-                csv_path, manifest_path, total = build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=workers, include_vtt=include_vtt, quality_filter=quality_filter)
-                self.log_queue.put(("log", f"✅ CSV generado: {csv_path}"))
-                self.log_queue.put(("log", f"✅ Manifest generado: {manifest_path}"))
-                self.log_queue.put(("log", f"📊 Total archivos: {total}"))
-                self.extract_available_qualities(manifest_path)
-                self.progress_queue.put({"type": "info", "text": f"✅ Lista generada: {total} archivos"})
-            except Exception as e:
-                self.log_queue.put(("log", f"❌ Error generando lista: {str(e)}"))
                 self.progress_queue.put({"type": "error", "text": str(e)})
             finally:
                 self.after(0, self.enable_controls)
-        threading.Thread(target=generate_thread, daemon=True).start()
+        
+        threading.Thread(target=search_thread, daemon=True).start()
     
-    def extract_available_qualities(self, manifest_path):
+    def extract_available_qualities(self):
+        """Extraer calidades disponibles del manifest en memoria"""
         try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
+            if not self.manifest_data:
+                return
+            
             qualities = set()
-            for item in manifest.get("items", []):
+            for item in self.manifest_data.get("items", []):
                 if item.get("type") == "mp4":
                     quality = item.get("quality", "")
-                    if quality: qualities.add(quality)
+                    if quality:
+                        qualities.add(quality)
+            
             self.available_qualities = qualities
             self.after(0, self.update_quality_selector, qualities)
         except Exception as e:
@@ -467,7 +465,11 @@ class TV3_GUI(ctk.CTk):
     
     def update_quality_selector(self, qualities):
         if qualities:
-            sorted_qualities = sorted(qualities, key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, reverse=True)
+            sorted_qualities = sorted(
+                qualities, 
+                key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, 
+                reverse=True
+            )
             quality_list = ["Todas"] + sorted_qualities
             self.quality_combo.configure(values=quality_list, state="normal")
             self.quality_var.set("Todas")
@@ -477,12 +479,8 @@ class TV3_GUI(ctk.CTk):
             self.add_log("⚠️ No se encontraron calidades específicas")
     
     def start_download(self):
-        if not self.program_info:
+        if not self.program_info or not self.manifest_data:
             messagebox.showwarning("Advertencia", "Primero busca un programa")
-            return
-        if not os.path.exists("links-fitxers.csv"):
-            response = messagebox.askyesno("Lista no encontrada", "No se encontró la lista de archivos. ¿Quieres generarla primero?")
-            if response: self.generate_and_download()
             return
         
         self.is_downloading = True
@@ -497,10 +495,45 @@ class TV3_GUI(ctk.CTk):
                 workers = self.workers_var.get()
                 use_aria2 = self.aria2_var.get()
                 resume = self.resume_var.get()
-                with open("manifest.json", "r", encoding="utf-8") as f: manifest = json.load(f)
-                total_files = len(manifest.get("items", []))
+                quality_filter = self.quality_var.get()
+                if quality_filter == "Todas":
+                    quality_filter = ""
+                include_vtt = self.vtt_var.get()
+                
+                # Filtrar items según configuración
+                items = self.manifest_data.get("items", [])
+                filtered_items = []
+                
+                for item in items:
+                    # Filtrar por tipo (mp4 o vtt según config)
+                    if item.get("type") == "vtt" and not include_vtt:
+                        continue
+                    
+                    # Filtrar por calidad si es mp4
+                    if item.get("type") == "mp4" and quality_filter:
+                        if quality_filter not in item.get("quality", ""):
+                            continue
+                    
+                    filtered_items.append(item)
+                
+                total_files = len(filtered_items)
                 self.log_queue.put(("log", f"📦 Total archivos a descargar: {total_files}"))
-                self.download_from_csv_with_progress("links-fitxers.csv", self.program_info.get("titol"), total_files, videos_folder=output_folder, max_workers=workers, use_aria2=use_aria2, resume=resume)
+                
+                if total_files == 0:
+                    self.log_queue.put(("log", "⚠️ No hay archivos que descargar con la configuración actual"))
+                    self.progress_queue.put({"type": "complete", "text": ""})
+                    return
+                
+                self.download_from_manifest(
+                    filtered_items, 
+                    self.program_info.get("titol"), 
+                    total_files, 
+                    videos_folder=output_folder, 
+                    max_workers=workers, 
+                    use_aria2=use_aria2, 
+                    resume=resume
+                )
+                
                 self.progress_queue.put({"type": "complete", "text": ""})
                 self.log_queue.put(("log", "🎉 ¡Descarga completada!"))
             except Exception as e:
@@ -509,42 +542,42 @@ class TV3_GUI(ctk.CTk):
             finally:
                 self.is_downloading = False
                 self.after(0, self.enable_controls)
+        
         threading.Thread(target=download_thread, daemon=True).start()
     
-    def download_from_csv_with_progress(self, csv_path, program_name, total_files, videos_folder="downloads", subtitols_folder="downloads", max_workers=6, use_aria2=False, resume=True):
-        program_safe = safe_filename(program_name)
+    def download_from_manifest(self, items, program_name, total_files, videos_folder="downloads", max_workers=6, use_aria2=False, resume=True):
         base_folder = videos_folder
         ensure_folder(base_folder)
-        rows = []
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for r in reader: rows.append(r)
         
         tasks = []
-        for row in rows:
-            link = row["Link"].strip()
-            fname = row["File Name"].strip()
-            program = safe_filename(row["Program"])
+        for item in items:
+            link = item["link"]
+            program = safe_filename(item["program"])
             folder = os.path.join(base_folder, program)
             ensure_folder(folder)
-            final_name = f"{row['Name']}.{fname.split('.')[-1]}"
+            
+            name = item["name"]
+            file_ext = item["file_name"].split('.')[-1]
+            final_name = f"{name}.{file_ext}"
             dst = os.path.join(folder, safe_filename(final_name))
             tmp = dst + ".part"
             
             if resume:
-                if not os.path.exists(tmp): continue
+                if not os.path.exists(tmp):
+                    continue
                 method_use_aria2 = False
             else:
-                if os.path.exists(dst): continue
+                if os.path.exists(dst):
+                    continue
                 method_use_aria2 = bool(use_aria2)
             
             desc_name = os.path.basename(dst)
             tasks.append({"link": link, "dst": dst, "desc": desc_name, "use_aria2": method_use_aria2})
-            
+        
         if not tasks:
             self.log_queue.put(("log", "ℹ️ No hay archivos pendientes de descarga"))
             return
-            
+        
         total_tasks = len(tasks)
         completed_tasks = 0
         
@@ -581,42 +614,13 @@ class TV3_GUI(ctk.CTk):
         self.log_queue.put(("log", f"Total fallidos: {total_failed}"))
         self.log_queue.put(("log", f"Tamaño total: {size_bytes / (1024*1024):.2f} MB"))
 
-    def generate_and_download(self):
-        self.disable_controls()
-        def full_process():
-            try:
-                program_id = self.program_info.get("id")
-                workers = self.workers_var.get()
-                quality = self.quality_var.get()
-                include_vtt = self.vtt_var.get()
-                quality_filter = "" if quality == "Todas" else quality
-                
-                self.log_queue.put(("log", "🔄 Paso 1/2: Generando lista..."))
-                cids = obtener_ids_capitulos(program_id, items_pagina=100, workers=workers)
-                csv_path, manifest_path, total = build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=workers, include_vtt=include_vtt, quality_filter=quality_filter)
-                self.log_queue.put(("log", "✅ Lista generada correctamente"))
-                
-                self.log_queue.put(("log", "🔄 Paso 2/2: Descargando archivos..."))
-                self.extract_available_qualities(manifest_path)
-                output_folder = self.output_entry.get()
-                use_aria2 = self.aria2_var.get()
-                resume = self.resume_var.get()
-                
-                self.download_from_csv_with_progress(csv_path, self.program_info.get("titol"), total, videos_folder=output_folder, max_workers=workers, use_aria2=use_aria2, resume=resume)
-                self.progress_queue.put({"type": "complete", "text": ""})
-                self.log_queue.put(("log", "🎉 ¡Proceso completo finalizado!"))
-            except Exception as e:
-                self.log_queue.put(("log", f"❌ Error: {str(e)}"))
-                self.progress_queue.put({"type": "error", "text": str(e)})
-            finally:
-                self.after(0, self.enable_controls)
-        threading.Thread(target=full_process, daemon=True).start()
 
 # ----------------------------
 # Utilities
 # ----------------------------
 def ensure_folder(path):
-    if not os.path.exists(path): os.makedirs(path, exist_ok=True)
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
 
 def safe_filename(name):
     name = re.sub(r'[\\/:"*?<>|]+', '-', name)
@@ -635,15 +639,19 @@ def cache_get(id_):
     path = os.path.join(CACHE_DIR, f"{id_}.json")
     if os.path.exists(path):
         try:
-            with open(path, "r", encoding="utf-8") as f: return json.load(f)
-        except Exception: return None
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
     return None
 
 def cache_set(id_, data):
     path = os.path.join(CACHE_DIR, f"{id_}.json")
     try:
-        with open(path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e: logger.debug("Cache write failed %s: %s", path, e)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.debug("Cache write failed %s: %s", path, e)
 
 def obtener_program_info(nombonic):
     data = fetch_json("https://api.3cat.cat/programestv")
@@ -661,7 +669,8 @@ def obtener_program_info(nombonic):
         for p in items:
             if isinstance(p, dict) and p.get("nombonic") == nombonic:
                 return {"id": p.get("id"), "titol": p.get("titol"), "nombonic": p.get("nombonic")}
-    except Exception as e: logger.debug("Error parsing programestv: %s", e)
+    except Exception as e:
+        logger.debug("Error parsing programestv: %s", e)
     raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
 
 def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
@@ -677,7 +686,8 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
                 params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": page}
                 d = fetch_json("https://api.3cat.cat/videos", params=params)
                 item_list = d["resposta"]["items"]["item"]
-                if isinstance(item_list, dict): item_list = [item_list]
+                if isinstance(item_list, dict):
+                    item_list = [item_list]
                 ids_local = [i["id"] for i in item_list if "id" in i]
                 tcap_local = [i["capitol_temporada"] for i in item_list if "capitol_temporada" in i]
                 return ids_local, tcap_local
@@ -693,12 +703,14 @@ def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", work
                 ids, tcaps = future.result()
                 all_ids.extend(ids)
                 all_tcaps.extend(tcaps)
-            except Exception: pass
+            except Exception:
+                pass
     return [{"id": id, "tcap": tcap} for id, tcap in zip(all_ids, all_tcaps)]
 
 def api_extract_media_urls(id_cap):
     cached = cache_get(id_cap)
-    if cached: return cached
+    if cached:
+        return cached
     url = "https://api.3cat.cat/pvideo/media.jsp"
     params = {"media": "video", "version": "0s", "idint": id_cap}
     try:
@@ -712,40 +724,52 @@ def api_extract_media_urls(id_cap):
         info["capitol"] = data.get("informacio", {}).get("capitol", str(id_cap))
         info["temporada"] = data.get("informacio", {}).get("temporada", {}).get("idName", "0")[7:] or "0"
         files = data.get("media", {}).get("url", []) or []
-        if isinstance(files, dict): files = [files]
+        if isinstance(files, dict):
+            files = [files]
         mp4s = []
         for entry in files:
-            if not isinstance(entry, dict): continue
+            if not isinstance(entry, dict):
+                continue
             mp4 = entry.get("file")
             label = entry.get("label") or entry.get("quality") or entry.get("descripcio") or ""
-            if mp4 and ("mp4" in mp4.lower()): mp4s.append({"label": label or "mp4", "url": mp4})
+            if mp4 and ("mp4" in mp4.lower()):
+                mp4s.append({"label": label or "mp4", "url": mp4})
         vfiles = data.get("subtitols", []) or []
-        if isinstance(vfiles, dict): vfiles = [vfiles]
+        if isinstance(vfiles, dict):
+            vfiles = [vfiles]
         vtts = []
         for entry in vfiles:
-            if not isinstance(entry, dict): continue
+            if not isinstance(entry, dict):
+                continue
             vtt = entry.get("url")
             label = entry.get("text") or entry.get("lang") or ""
-            if vtt and (".vtt" in vtt.lower() or "vtt" in vtt.lower()): vtts.append({"label": label or "vtt", "url": vtt})
+            if vtt and (".vtt" in vtt.lower() or "vtt" in vtt.lower()):
+                vtts.append({"label": label or "vtt", "url": vtt})
         info["mp4s"] = mp4s
         info["vtts"] = vtts
         cache_set(id_cap, info)
         return info
-    except Exception as e: return None
+    except Exception as e:
+        return None
 
-def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifest.json", workers=8, retry_failed=2, include_vtt=True, quality_filter=""):
+def build_manifest(cids, manifest_path="manifest.json", workers=8, retry_failed=2):
+    """Genera el manifest sin crear CSV"""
     ensure_folder("cache")
-    rows, failed = [], []
+    failed = []
+    manifest_items = []
+    
     def worker(cid):
         attempts = 0
         while attempts <= retry_failed:
             attempts += 1
             res = api_extract_media_urls(cid["id"])
-            if res: break
+            if res:
+                break
             time.sleep(1 * attempts)
         if not res:
             failed.append(cid)
             return []
+        
         program = safe_filename(res["programa"])
         title = safe_filename(res["title"])
         safe_title = safe_filename(res["title"]).split("-", 1)[1].strip() if "-" in safe_filename(res["title"]) else safe_filename(res["title"])
@@ -753,45 +777,67 @@ def build_links_csv(cids, output_csv="links-fitxers.csv", manifest_path="manifes
         temporada = res.get("temporada")
         tcap = cid["tcap"]
         safe_name = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
+        safe_name_vtt = f"{program} - {int(temporada)}x{int(tcap):02d} - {safe_title}"
+        
         local = []
         for mp in res["mp4s"]:
-            if quality_filter and quality_filter not in mp["label"]: continue
             fname = mp["url"].split("/")[-1]
-            local.append([capitol, program, temporada, tcap, title, safe_name, mp["label"], mp["url"], fname, "mp4"])
-        if include_vtt:
-            for vt in res["vtts"]:
-                fname = vt["url"].split("/")[-1]
-                local.append([capitol, program, temporada, tcap, title, safe_name, vt["label"], vt["url"], fname, "vtt"])
+            local.append({
+                "capitol": capitol,
+                "program": program,
+                "temporada": temporada,
+                "temporada_capitol": tcap,
+                "title": title,
+                "name": safe_name,
+                "quality": mp["label"],
+                "link": mp["url"],
+                "file_name": fname,
+                "type": "mp4"
+            })
+        
+        for vt in res["vtts"]:
+            fname = vt["url"].split("/")[-1]
+            local.append({
+                "capitol": capitol,
+                "program": program,
+                "temporada": temporada,
+                "temporada_capitol": tcap,
+                "title": title,
+                "name": f"{safe_name} - {vt["label"]}",
+                "quality": vt["label"],
+                "link": vt["url"],
+                "file_name": fname,
+                "type": "vtt"
+            })
+        
         return local
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = {ex.submit(worker, cid): cid for cid in cids}
         for future in as_completed(futures):
             try:
-                chapter_rows = future.result()
-                rows.extend(chapter_rows)
-            except Exception: failed.append(futures[future])
+                chapter_items = future.result()
+                manifest_items.extend(chapter_items)
+            except Exception:
+                failed.append(futures[future])
 
     def safe_int(x):
-        try: return int(x)
-        except: return 0
-    rows_sorted = sorted(rows, key=lambda r: safe_int(r[0]))
+        try:
+            return int(x)
+        except:
+            return 0
+    
+    manifest_items_sorted = sorted(manifest_items, key=lambda r: safe_int(r["capitol"]))
 
-    with open(output_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Capitol", "Program", "Temporada", "TempCap", "Title", "Name", "Quality", "Link", "File Name", "Type"])
-        writer.writerows(rows_sorted)
-
-    manifest = {"generated_at": time.time(), "items": []}
-    for r in rows_sorted:
-        manifest["items"].append({
-            "capitol": r[0], "program": r[1], "temporada": r[2], "temporada_capitol": r[3],
-            "title": r[4], "name": r[5], "quality": r[6], "link": r[7], "file_name": r[8], "type": r[9]
-        })
+    manifest = {
+        "generated_at": time.time(),
+        "items": manifest_items_sorted
+    }
+    
     with open(manifest_path, "w", encoding="utf-8") as mf:
         json.dump(manifest, mf, ensure_ascii=False, indent=2)
 
-    return output_csv, manifest_path, len(rows_sorted)
+    return manifest
 
 def download_chunked_with_callback(url, dst, desc_name, max_retries=4, timeout=30, use_range=True, progress_queue=None):
     ensure_folder(os.path.dirname(dst))
@@ -799,23 +845,28 @@ def download_chunked_with_callback(url, dst, desc_name, max_retries=4, timeout=3
     existing = os.path.getsize(tmp) if os.path.exists(tmp) else 0
     headers = {}
     filename = os.path.basename(dst)
-    if use_range and existing > 0: headers["Range"] = f"bytes={existing}-"
-    if progress_queue: progress_queue.put({"type": "start", "filename": filename})
+    if use_range and existing > 0:
+        headers["Range"] = f"bytes={existing}-"
+    if progress_queue:
+        progress_queue.put({"type": "start", "filename": filename})
 
     for attempt in range(1, max_retries + 1):
         try:
             with SESSION.get(url, stream=True, timeout=timeout, headers=headers) as r:
                 if "Range" in headers:
-                    if r.status_code == 206: mode = "ab"
+                    if r.status_code == 206:
+                        mode = "ab"
                     elif r.status_code == 416:
                         os.replace(tmp, dst)
-                        if progress_queue: progress_queue.put({"type": "complete", "filename": filename})
+                        if progress_queue:
+                            progress_queue.put({"type": "complete", "filename": filename})
                         return dst
                     else:
                         existing = 0
                         headers.pop("Range", None)
                         mode = "wb"
-                else: mode = "wb"
+                else:
+                    mode = "wb"
                 r.raise_for_status()
                 total = r.headers.get("Content-Length")
                 total = int(total) if total else None
@@ -833,12 +884,14 @@ def download_chunked_with_callback(url, dst, desc_name, max_retries=4, timeout=3
                                 progress_queue.put_nowait({"type": "update", "filename": filename, "progress": downloaded / total_bytes})
                                 last_update = now
                 os.replace(tmp, dst)
-                if progress_queue: progress_queue.put({"type": "complete", "filename": filename})
+                if progress_queue:
+                    progress_queue.put({"type": "complete", "filename": filename})
                 return dst
         except Exception as e:
             time.sleep(1)
             
-    if progress_queue: progress_queue.put({"type": "error", "filename": filename})
+    if progress_queue:
+        progress_queue.put({"type": "error", "filename": filename})
     return None
 
 def download_with_aria2(url, dst, aria2c_bin="aria2c"):
@@ -847,7 +900,8 @@ def download_with_aria2(url, dst, aria2c_bin="aria2c"):
     try:
         subprocess.check_call(cmd)
         return dst
-    except Exception: return None
+    except Exception:
+        return None
 
 class StdoutRedirector:
     def __init__(self, log_queue):
@@ -859,9 +913,11 @@ class StdoutRedirector:
         logger.setLevel(logging.INFO)
 
     def write(self, message):
-        if message.strip(): self.log_queue.put(("log", message.rstrip()))
+        if message.strip():
+            self.log_queue.put(("log", message.rstrip()))
 
-    def flush(self): pass
+    def flush(self):
+        pass
 
 def main():
     app = TV3_GUI()
