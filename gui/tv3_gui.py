@@ -143,6 +143,222 @@ class CTkToolTip:
             self.tipwindow.destroy()
             self.tipwindow = None
 
+class DownloadStatsPopup(ctk.CTkToplevel):
+    """Ventana popup para mostrar estadísticas de descarga"""
+    
+    def __init__(self, parent, stats):
+        super().__init__(parent)
+        
+        self.title("📊 Estadísticas de Descarga")
+        self.geometry("500x650")  # ← Aumentado de 600 a 650
+        self.resizable(False, False)
+        
+        # Centrar en la pantalla
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() // 2) - (500 // 2)
+        y = (self.winfo_screenheight() // 2) - (650 // 2)  # ← Actualizado
+        self.geometry(f"+{x}+{y}")
+        
+        # Hacer modal
+        self.transient(parent)
+        self.grab_set()
+        
+        # Configurar contenido
+        self.create_widgets(stats)
+        
+        # Foco
+        self.focus()
+    
+    def create_widgets(self, stats):
+        """Crear widgets del popup"""
+        # Frame principal con padding
+        main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # ===== HEADER =====
+        header_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        header_frame.pack(fill="x", pady=(0, 15))
+        
+        # Determinar emoji según resultado
+        if stats['failed'] == 0 and stats['completed'] > 0:
+            emoji = "🎉"
+            title_text = "¡Descarga Completada!"
+            title_color = ("green", "lightgreen")
+        elif stats['failed'] > 0 and stats['completed'] > 0:
+            emoji = "⚠️"
+            title_text = "Descarga Completada con Errores"
+            title_color = ("orange", "yellow")
+        elif stats['failed'] > 0 and stats['completed'] == 0:
+            emoji = "❌"
+            title_text = "Descarga Fallida"
+            title_color = ("red", "lightcoral")
+        else:
+            emoji = "ℹ️"
+            title_text = "Proceso Finalizado"
+            title_color = ("gray", "lightgray")
+        
+        title_label = ctk.CTkLabel(
+            header_frame,
+            text=f"{emoji} {title_text}",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=title_color
+        )
+        title_label.pack()
+        
+        # Separador
+        separator1 = ctk.CTkFrame(main_frame, height=2, fg_color=("gray70", "gray30"))
+        separator1.pack(fill="x", pady=(0, 15))
+        
+        # ===== ESTADÍSTICAS PRINCIPALES =====
+        stats_frame = ctk.CTkFrame(main_frame, corner_radius=10, fg_color=("gray90", "gray17"))
+        stats_frame.pack(fill="x", pady=(0, 15))
+        
+        # Grid de estadísticas
+        stats_grid = ctk.CTkFrame(stats_frame, fg_color="transparent")
+        stats_grid.pack(fill="x", padx=20, pady=20)
+        
+        # Función helper para crear stat box
+        def create_stat_box(parent, row, col, icon, label, value, color):
+            box = ctk.CTkFrame(parent, fg_color="transparent")
+            box.grid(row=row, column=col, padx=10, pady=10, sticky="ew")
+            
+            icon_label = ctk.CTkLabel(box, text=icon, font=ctk.CTkFont(size=32))
+            icon_label.pack()
+            
+            value_label = ctk.CTkLabel(
+                box,
+                text=str(value),
+                font=ctk.CTkFont(size=28, weight="bold"),
+                text_color=color
+            )
+            value_label.pack()
+            
+            label_text = ctk.CTkLabel(
+                box,
+                text=label,
+                font=ctk.CTkFont(size=12),
+                text_color=("gray50", "gray60")
+            )
+            label_text.pack()
+        
+        # Configurar grid
+        stats_grid.grid_columnconfigure(0, weight=1)
+        stats_grid.grid_columnconfigure(1, weight=1)
+        
+        # Estadísticas principales
+        create_stat_box(stats_grid, 0, 0, "✅", "Completados", stats['completed'], ("green", "lightgreen"))
+        create_stat_box(stats_grid, 0, 1, "❌", "Fallidos", stats['failed'], ("red", "lightcoral"))
+        
+        if stats.get('skipped', 0) > 0:
+            create_stat_box(stats_grid, 1, 0, "⏭️", "Ya existían", stats['skipped'], ("blue", "lightblue"))
+        
+        create_stat_box(stats_grid, 1, 1, "💾", "Tamaño Total", stats['total_size'], ("purple", "violet"))
+        
+        # ===== DETALLES =====
+        details_frame = ctk.CTkFrame(main_frame, corner_radius=10, fg_color=("gray90", "gray17"))
+        details_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        details_label = ctk.CTkLabel(
+            details_frame,
+            text="📋 Detalles",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w"
+        )
+        details_label.pack(fill="x", padx=15, pady=(15, 10))
+        
+        # Lista de detalles
+        details_text = ctk.CTkTextbox(
+            details_frame,
+            height=120,  # ← Reducido de 150 a 120
+            font=ctk.CTkFont(family="Consolas", size=11),
+            wrap="word"
+        )
+        details_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        # Construir texto de detalles
+        details_content = []
+        details_content.append(f"🕐 Tiempo total: {stats['duration']}")
+        details_content.append(f"📁 Carpeta: {stats['folder']}")
+        
+        if stats['completed'] > 0:
+            details_content.append(f"\n✅ Archivos descargados correctamente: {stats['completed']}")
+        
+        if stats['failed'] > 0:
+            details_content.append(f"\n❌ Archivos con errores: {stats['failed']}")
+            if stats.get('failed_list'):
+                details_content.append("\nArchivos fallidos:")
+                for i, failed_file in enumerate(stats['failed_list'][:5], 1):
+                    details_content.append(f"  {i}. {failed_file}")
+                if len(stats['failed_list']) > 5:
+                    details_content.append(f"  ... y {len(stats['failed_list']) - 5} más")
+        
+        if stats.get('skipped', 0) > 0:
+            details_content.append(f"\n⏭️ Archivos que ya existían: {stats['skipped']}")
+        
+        details_text.insert("1.0", "\n".join(details_content))
+        details_text.configure(state="disabled")
+        
+        # Separador
+        separator2 = ctk.CTkFrame(main_frame, height=2, fg_color=("gray70", "gray30"))
+        separator2.pack(fill="x", pady=(0, 15))
+        
+        # ===== BOTONES =====
+        # Frame para botones con altura fija
+        buttons_container = ctk.CTkFrame(main_frame, fg_color="transparent", height=45)
+        buttons_container.pack(fill="x", pady=(0, 0))
+        buttons_container.pack_propagate(False)  # ← IMPORTANTE: Evita que se colapse
+        
+        buttons_frame = ctk.CTkFrame(buttons_container, fg_color="transparent")
+        buttons_frame.pack(fill="both", expand=True)
+        
+        # Botón para abrir carpeta
+        open_folder_btn = ctk.CTkButton(
+            buttons_frame,
+            text="📂 Abrir Carpeta",
+            command=lambda: self.open_folder(stats['folder']),
+            height=40,
+            font=ctk.CTkFont(size=13),
+            fg_color=("peru", "chocolate"),
+            hover_color=("chocolate", "peru")
+        )
+        open_folder_btn.pack(side="left", expand=True, fill="both", padx=(0, 5))
+        
+        # Botón cerrar
+        close_btn = ctk.CTkButton(
+            buttons_frame,
+            text="✓ Cerrar",
+            command=self.destroy,
+            height=40,
+            font=ctk.CTkFont(size=13),
+            fg_color=("green", "darkgreen"),
+            hover_color=("darkgreen", "green")
+        )
+        close_btn.pack(side="left", expand=True, fill="both", padx=(5, 0))
+    
+    def open_folder(self, folder_path):
+        """Abrir la carpeta de descargas"""
+        try:
+            if os.path.exists(folder_path):
+                if sys.platform == 'win32':
+                    os.startfile(folder_path)
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', folder_path])
+                else:
+                    subprocess.Popen(['xdg-open', folder_path])
+                # Cerrar el popup después de abrir la carpeta
+                self.destroy()
+            else:
+                messagebox.showwarning(
+                    "Carpeta no encontrada", 
+                    f"La carpeta no existe:\n{folder_path}",
+                    parent=self
+                )
+        except Exception as e:
+            messagebox.showerror(
+                "Error", 
+                f"No se pudo abrir la carpeta:\n{str(e)}",
+                parent=self
+            )
 
 class TV3_GUI(ctk.CTk):
     def __init__(self):
@@ -187,6 +403,22 @@ class TV3_GUI(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
+    def show_stats_popup(self, stats):
+        """Mostrar popup con estadísticas de descarga"""
+        try:
+            popup = DownloadStatsPopup(self, stats)
+            popup.focus()
+        except Exception as e:
+            logger.error(f"Error mostrando popup de estadísticas: {e}")
+            # Fallback a messagebox simple
+            message = (
+                f"✅ Descargados: {stats['completed']}\n"
+                f"❌ Fallidos: {stats['failed']}\n"
+                f"💾 Tamaño: {stats['total_size']}\n"
+                f"🕐 Tiempo: {stats['duration']}"
+            )
+            messagebox.showinfo("Descarga Completada", message)
+
     def on_closing(self):
         """Manejar el cierre de la ventana"""
         if self.is_downloading:
@@ -225,10 +457,29 @@ class TV3_GUI(ctk.CTk):
             height=30,
             corner_radius=15,
             command=self.show_help,
-            fg_color="transparent",
-            border_width=1
+            #fg_color="blue",
+            border_width=0
         )
         help_btn.pack(side="right", padx=15)
+
+        self.status_bar = ctk.CTkFrame(self, height=25, corner_radius=0, fg_color=("gray80", "gray25"))
+        self.status_bar.pack(side="bottom", fill="x")
+
+        self.status_label = ctk.CTkLabel(
+            self.status_bar,
+            text="📊 Listo | 0 archivos | 0 B",
+            font=ctk.CTkFont(size=11),
+            anchor="w"
+        )
+        self.status_label.pack(side="left", padx=10)
+
+        self.version_label = ctk.CTkLabel(
+            self.status_bar,
+            text="v1.0 GUI",
+            font=ctk.CTkFont(size=10),
+            text_color=("gray50", "gray60")
+        )
+        self.version_label.pack(side="right", padx=10)
 
         # ===== 2. CENTER BODY (SCROLLABLE) - AHORA INCLUYE TODO =====
 #        self.main_scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
@@ -926,19 +1177,22 @@ class TV3_GUI(ctk.CTk):
         self.apply_filter()
 
     def update_selection_info(self):
-        """Actualizar contador de seleccionados"""
         total = len(self.all_items)
         selected = sum(1 for item in self.all_items if item["selected"])
-        
-        # Calcular tamaño total seleccionado si está disponible
         total_size = sum(item["tamaño_bytes"] for item in self.all_items if item["selected"])
-        
+    
+        # Actualizar info de selección
         if total_size > 0:
             self.selection_info.configure(
                 text=f"Seleccionados: {selected}/{total} ({format_size(total_size)})"
             )
+            # NUEVO: Actualizar barra de estado
+            self.status_label.configure(
+                text=f"📊 {selected} seleccionados de {total} | {format_size(total_size)}"
+            )
         else:
             self.selection_info.configure(text=f"Seleccionados: {selected}/{total}")
+            self.status_label.configure(text=f"📊 {selected} seleccionados de {total} | 0 B")
 
     def get_selected_items(self):
         """Obtener lista de items seleccionados"""
@@ -1289,39 +1543,59 @@ class TV3_GUI(ctk.CTk):
     def download_from_manifest(self, items, program_name, total_files, videos_folder="downloads", max_workers=6, use_aria2=False, resume=True):
         base_folder = videos_folder
         ensure_folder(base_folder)
-        
+    
+        # Tiempo de inicio
+        start_time = time.time()
+    
         tasks = []
+        skipped = 0
+    
         for item in items:
             link = item["link"]
             program = safe_filename(item["program"])
             folder = os.path.join(base_folder, program)
             ensure_folder(folder)
-            
+        
             name = item["name"]
             file_ext = item["file_name"].split('.')[-1]
             final_name = f"{name}.{file_ext}"
             dst = os.path.join(folder, safe_filename(final_name))
             tmp = dst + ".part"
-            
+        
             if resume:
                 if not os.path.exists(tmp):
                     continue
                 method_use_aria2 = False
             else:
                 if os.path.exists(dst):
+                    skipped += 1
                     continue
                 method_use_aria2 = bool(use_aria2)
-            
-            desc_name = os.path.basename(dst)
-            tasks.append({"link": link, "dst": dst, "desc": desc_name, "use_aria2": method_use_aria2})
         
+            desc_name = os.path.basename(dst)
+            tasks.append({
+                "link": link, 
+                "dst": dst, 
+                "desc": desc_name, 
+                "use_aria2": method_use_aria2,
+                "folder": folder  # Guardar carpeta de destino
+            })
+    
+        if skipped > 0:
+            self.log_queue.put(("log", f"⏭️ {skipped} archivos ya descargados (omitidos)"))
+    
         if not tasks:
             self.log_queue.put(("log", "ℹ️ No hay archivos pendientes de descarga"))
+            self.progress_queue.put({"type": "complete", "text": ""})
             return
-        
+    
+        self.log_queue.put(("log", f"🔄 Procesando {len(tasks)} archivos..."))
+    
         total_tasks = len(tasks)
         completed_tasks = 0
-        
+        failed_tasks = []
+        destination_folder = tasks[0]["folder"] if tasks else base_folder
+    
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {}
             for t in tasks:
@@ -1330,7 +1604,7 @@ class TV3_GUI(ctk.CTk):
                 else:
                     fut = ex.submit(download_chunked_with_callback, t["link"], t["dst"], t["desc"], 4, 30, not resume, self.file_progress_queue)
                 futures[fut] = t
-            
+        
             for future in as_completed(futures):
                 task = futures[future]
                 filename = task["desc"]
@@ -1339,21 +1613,64 @@ class TV3_GUI(ctk.CTk):
                     if res:
                         completed_tasks += 1
                         self.log_queue.put(("log", f"✅ Descargado: {filename}"))
-                        progress_value = completed_tasks / total_tasks
-                        self.progress_queue.put({"type": "progress", "value": progress_value})
-                        self.progress_queue.put({"type": "info", "text": f"Descargando: {completed_tasks}/{total_tasks} archivos ({int(progress_value * 100)}%)"})
                     else:
+                        failed_tasks.append(filename)
                         self.log_queue.put(("log", f"⚠️ Fallo al descargar: {filename}"))
+                
+                    # Actualizar progreso
+                    progress_value = (completed_tasks + len(failed_tasks)) / total_tasks
+                    self.progress_queue.put({"type": "progress", "value": progress_value})
+                    self.progress_queue.put({
+                        "type": "info", 
+                        "text": f"Descargando: {completed_tasks}/{total_tasks} completados, {len(failed_tasks)} fallidos ({int(progress_value * 100)}%)"
+                    })
                 except Exception as e:
+                    failed_tasks.append(filename)
                     self.log_queue.put(("log", f"❌ Error: {filename} - {str(e)}"))
-        
+    
+        # Calcular tiempo total
+        end_time = time.time()
+        duration_seconds = int(end_time - start_time)
+        duration_str = f"{duration_seconds // 60}m {duration_seconds % 60}s"
+    
+        # Estadísticas finales
         total_downloaded = sum(1 for t in tasks if os.path.exists(t["dst"]))
-        total_failed = total_tasks - total_downloaded
         size_bytes = sum(os.path.getsize(t["dst"]) for t in tasks if os.path.exists(t["dst"]))
-        self.log_queue.put(("log", "===== Estadísticas finales ====="))
-        self.log_queue.put(("log", f"Total descargados: {total_downloaded}"))
-        self.log_queue.put(("log", f"Total fallidos: {total_failed}"))
-        self.log_queue.put(("log", f"Tamaño total: {size_bytes / (1024*1024):.2f} MB"))
+    
+        # Logs (como antes)
+        self.log_queue.put(("log", "=" * 50))
+        self.log_queue.put(("log", "📊 ESTADÍSTICAS FINALES"))
+        self.log_queue.put(("log", "=" * 50))
+        self.log_queue.put(("log", f"✅ Descargados exitosamente: {total_downloaded}"))
+        self.log_queue.put(("log", f"❌ Fallidos: {len(failed_tasks)}"))
+        if skipped > 0:
+            self.log_queue.put(("log", f"⏭️ Ya existían: {skipped}"))
+        self.log_queue.put(("log", f"💾 Tamaño total: {size_bytes / (1024*1024):.2f} MB"))
+        self.log_queue.put(("log", f"🕐 Tiempo total: {duration_str}"))
+    
+        if failed_tasks:
+            self.log_queue.put(("log", ""))
+            self.log_queue.put(("log", "⚠️ Archivos fallidos:"))
+            for failed_file in failed_tasks[:10]:
+                self.log_queue.put(("log", f"  - {failed_file}"))
+            if len(failed_tasks) > 10:
+                self.log_queue.put(("log", f"  ... y {len(failed_tasks) - 10} más"))
+    
+        self.log_queue.put(("log", "=" * 50))
+    
+        # NUEVO: Preparar estadísticas para el popup
+        stats = {
+            'completed': total_downloaded,
+            'failed': len(failed_tasks),
+            'skipped': skipped,
+            'total_size': format_size(size_bytes),
+            'duration': duration_str,
+            'folder': destination_folder,
+            'failed_list': failed_tasks
+        }
+    
+        # NUEVO: Mostrar popup con estadísticas
+        self.after(500, lambda: self.show_stats_popup(stats))
 
 
 # ----------------------------
