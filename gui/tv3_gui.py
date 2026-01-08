@@ -284,6 +284,24 @@ class TV3_GUI(ctk.CTk):
         
         self.add_log("✅ Aplicación iniciada correctamente")
         self.add_log("💡 Introduce el nombre del programa (nombonic) y pulsa 'Buscar'")
+        
+        # ===== SECCIÓN: LOGS =====
+        log_frame = ctk.CTkFrame(main_frame)
+        log_frame.pack(fill="both", expand=True)
+        
+        log_label = ctk.CTkLabel(
+            log_frame,
+            text="📝 Registro de actividad",
+            font=ctk.CTkFont(size=16, weight="bold")
+        )
+        log_label.pack(anchor="w", padx=15, pady=(15, 10))
+        
+        # Text widget para logs
+        self.log_text = ctk.CTkTextbox(log_frame, height=200, wrap="word")
+        self.log_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        
+        self.add_log("✅ Aplicación iniciada correctamente")
+        self.add_log("💡 Introduce el nombre del programa (nombonic) y pulsa 'Buscar'")
     
     def add_log(self, message):
         """Añadir mensaje al log"""
