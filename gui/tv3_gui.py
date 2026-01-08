@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 import logging
+from typing import Dict, Any
 
 # ----------------------------
 # Config / Logging
@@ -67,6 +68,381 @@ class QueueLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
         self.log_queue.put(("log", msg))
+
+class TranslationManager:
+    def __init__(self, default_lang="es", config_file="config.json"):
+        self.config_file = config_file
+        self.default_lang = default_lang
+        self.current_lang = self.load_language_preference()
+        self.translations: Dict[str, Dict[str, Any]] = {}
+        self.available_languages = []
+        self.load_translations()
+    
+    def load_language_preference(self):
+        """Cargar idioma guardado desde archivo de configuración"""
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    saved_lang = config.get("language", self.default_lang)
+                    return saved_lang
+        except Exception as e:
+            print(f"Error cargando preferencia de idioma: {e}")
+        return self.default_lang
+    
+    def save_language_preference(self, lang_code):
+        """Guardar idioma seleccionado en archivo de configuración"""
+        try:
+            # Cargar configuración existente si hay
+            config = {}
+            if os.path.exists(self.config_file):
+                try:
+                    with open(self.config_file, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                except:
+                    pass
+            
+            # Actualizar idioma
+            config["language"] = lang_code
+            
+            # Guardar
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            
+            return True
+        except Exception as e:
+            print(f"Error guardando preferencia de idioma: {e}")
+            return False
+    
+    def load_translations(self):
+        """Cargar todos los archivos de traducción disponibles"""
+        # Primero cargar las traducciones embebidas como base
+        self._load_embedded_translations()
+        
+        # Luego intentar cargar archivos externos que sobrescriben/complementan las embebidas
+        translations_dir = resource_path("translations")
+        
+        if os.path.exists(translations_dir):
+            for filename in os.listdir(translations_dir):
+                if filename.endswith('.json'):
+                    lang_code = filename[:-5]  # Quitar .json
+                    filepath = os.path.join(translations_dir, filename)
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            external_translations = json.load(f)
+                            
+                            # Si el idioma ya existe (embebido), hacer merge profundo
+                            if lang_code in self.translations:
+                                self.translations[lang_code] = self._deep_merge(
+                                    self.translations[lang_code], 
+                                    external_translations
+                                )
+                                # ✅ VALIDAR tras merge
+                                self._validate_language_meta(lang_code)
+
+                            else:
+                                self.translations[lang_code] = external_translations
+                                self.available_languages.append(lang_code)
+                                # ✅ VALIDAR idioma nuevo
+                                self._validate_language_meta(lang_code)
+                            
+                            print(f"✅ Traducciones externas cargadas para '{lang_code}'")
+                    except Exception as e:
+                        print(f"⚠️ Error cargando traducción externa {lang_code}: {e}")
+    
+    def _deep_merge(self, base_dict, update_dict):
+        """Hacer merge profundo de diccionarios (update_dict sobrescribe base_dict)"""
+        result = base_dict.copy()
+        
+        for key, value in update_dict.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                # Si ambos son diccionarios, hacer merge recursivo
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                # Sobrescribir el valor
+                result[key] = value
+        
+        return result
+    
+    def _validate_language_meta(self, lang_code: str):
+        """Valida la sección meta de un idioma"""
+        meta = self.translations.get(lang_code, {}).get("meta", {})
+        language_name = meta.get("language_name")
+
+        if not isinstance(language_name, str) or not language_name.strip():
+            print(f"⚠️ Idioma '{lang_code}' sin meta.language_name válido")
+
+    def _load_embedded_translations(self):
+        """Traducciones embebidas como fallback"""
+        self.translations = {
+            "es": TRANSLATIONS_ES
+        }
+        self.available_languages = ["es"]
+    
+    def set_language(self, lang_code: str, save=True):
+        """Cambiar idioma actual"""
+        if lang_code in self.translations:
+            self.current_lang = lang_code
+            if save:
+                self.save_language_preference(lang_code)
+            return True
+        return False
+    
+    def get(self, key: str, **kwargs) -> str:
+        """Obtener traducción con soporte para variables"""
+        keys = key.split('.')
+        value = self.translations.get(self.current_lang, {})
+        
+        # Navegar por las claves anidadas
+        for k in keys:
+            if isinstance(value, dict):
+                value = value.get(k, key)
+            else:
+                return key
+
+        # Si es un array, unir con saltos de línea
+        if isinstance(value, list):
+            value = '\n'.join(value)
+	
+        # Reemplazar variables si se proporcionan
+        if kwargs and isinstance(value, str):
+            try:
+                value = value.format(**kwargs)
+            except KeyError:
+                pass
+        
+        return value if isinstance(value, str) else key
+    
+    def get_language_name(self, lang_code: str) -> str:
+        """Obtener nombre del idioma desde traducciones"""
+        try:
+            return self.translations[lang_code]["meta"]["language_name"]
+        except KeyError:
+            return lang_code.upper()
+
+    def get_lang_code_from_name(self, language_name: str) -> str | None:
+        """Devuelve el código de idioma a partir de su nombre visible"""
+        for code in self.available_languages:
+            try:
+                if self.get_language_name(code) == language_name:
+                    return code
+            except KeyError:
+                continue
+        return None
+
+# ============================================
+# TRADUCCIONES EMBEBIDAS
+# ============================================
+
+TRANSLATIONS_ES = {
+    "meta": {
+        "language_name": "Español"
+    },
+    "app": {
+        "title": "TV3 GUI Downloader",
+        "version": "v1.0 GUI"
+    },
+    "tabs": {
+        "config": "⚙️ Configuración",
+        "preview": "📋 Lista capítulos a descargar",
+        "progress": "📊 Progreso",
+        "logs": "📜 Logs"
+    },
+    "config": {
+        "title": "⚙️ Configuración",
+        "program_label": "Programa:",
+        "program_placeholder": "ej: dr-slump",
+        "search_btn": "🔍 Buscar",
+        "searching_btn": "⏳ Buscando...",
+        "quality_label": "Calidad:",
+        "subtitles_label": "Subtítulos:",
+        "workers_label": "Workers:",
+        "aria2_checkbox": "Usar aria2c",
+        "resume_checkbox": "Modo Only Resume",
+        "output_label": "Guardar en:",
+        "browse_btn": "📁",
+        "download_btn": "⬇️ Descargar Seleccionados",
+        "all_quality": "Todas",
+        "no_video": "Ninguna (No Video)",
+        "all_subs": "Todos",
+        "no_subs": "Ninguno (No Subs)"
+    },
+    "preview": {
+        "title": "📋 Vista Previa de Capítulos",
+        "select_all": "✓ Todos",
+        "select_filtered": "✓ Filtrados",
+        "deselect_all": "✗ Ninguno",
+        "deselect_filtered": "✗ Filtrados",
+        "invert_selection": "🔄 Invertir",
+        "fetch_sizes": "📏 Obtener Tamaños",
+        "fetch_sizes_action": "⏳ Obteniendo...",
+        "filter_label": "🔍 Filtrar:",
+        "filter_placeholder": "Buscar por título, temporada, capítulo...",
+        "clear_filter": "✖ Limpiar",
+        "selected_info": "Seleccionados: {selected}/{total}",
+        "selected_with_size": "Seleccionados: {selected}/{total} ({size})",
+        "col_selected": "✓",
+        "col_season": "Temp",
+        "col_episode": "Cap",
+        "col_title": "Título",
+        "col_quality": "Calidad",
+        "col_type": "Tipo",
+        "col_size": "Tamaño",
+        "col_order_desc": " ▼",
+        "col_order_asc": " ▲"
+    },
+    "progress": {
+        "title": "📊 Estado y Progreso",
+        "waiting": "Estado: Esperando órdenes...",
+        "searching": "Estado: Buscando programa y generando manifest...",
+        "downloading": "Estado: Descargando...",
+        "active_downloads": "⚡ Descargas Activas",
+        "no_downloads": "No hay descargas activas",
+        "downloading_status": "Descargando: {completed}/{total} completados, {failed} fallidos ({percent}%)"
+    },
+    "logs": {
+        "title": "📋 Registro de actividad",
+        "interface_loaded": "✅ Interfaz cargada con Vista Previa",
+        "search_program": "ℹ️ Busca un programa para ver los capítulos disponibles",
+		"fetch_sizes": "📏 Iniciando obtención de tamaños..."
+    },
+    "status": {
+        "ready": "📊 Listo | 0 archivos | 0 B",
+        "selected": "📊 {count} seleccionados de {total} | {size}"
+    },
+    "messages": {
+        "program_not_found": "❌ Programa no encontrado",
+        "program_not_found_name": "No se encontró programa con nombonic={nombonic}",
+        "program_found": "✅ Programa encontrado: {title}",
+        "total_chapters": "📊 Total capítulos encontrados: {count}",
+        "manifest_generated": "✅ Manifest generado: {count} archivos: {videos} videos - {subs} subtitulos",
+        "info_label_complete": "📺 {title} - {files} archivos disponibles: {videos} videos - {subs} subtitulos",
+        "searching": "Buscando programa y generando manifest...",
+        "qualities_available": "🎬 Calidades disponibles: {qualities}",
+        "subtitles_available": "🎬 Subtítulos disponibles: {langs}",
+        "items_loaded": "📊 Cargados {count} elementos en la vista previa",
+        "download_start": "⬇️ Iniciando descarga de {count} elementos...",
+        "download_complete": "🎉 ¡Descarga completada!",
+        "files_skipped": "⏭️ {count} archivos ya descargados (omitidos)",
+        "no_pending": "ℹ️ No hay archivos pendientes de descarga",
+        "processing": "📄 Procesando {count} archivos...",
+        "downloaded": "✅ Descargado: {filename}",
+        "completed": "✅ Proceso completado",
+        "failed": "⚠️ Fallo al descargar: {filename}",
+        "error": "❌ Error: {message}",
+        "filters_applied": "🔧 Aplicando filtros: {filters}",
+        "filters_result": "✓ Filtros aplicados: {count} elementos seleccionados",
+        "language_changed": "Idioma cambiado a {lang}",
+        "ui_updated": "✅ Interfaz actualizada"
+    },
+    "warnings": {
+        "warn_label": "Advertencia",
+        "enter_program": "Introduce el nombre del programa",
+        "no_items": "No hay archivos cargados",
+        "search_first": "Primero busca un programa",
+        "no_selection": "No has seleccionado ningún elemento para descargar",
+        "download_in_progress": "Hay una descarga en curso. ¿Estás seguro de que quieres salir?\n\nLos archivos parciales se guardarán y podrás reanudar más tarde."
+    },
+    "info": {
+        "language_change_title": "Cambio de idioma",
+        "language_change_message": "La interfaz se ha actualizado.\n\nNOTA: Los nombres de las pestañas mantendrán su idioma original debido a limitaciones técnicas.",
+        "language_restart_suggestion": "💡 SUGERENCIA: Reinicia la aplicación para ver las pestañas en el nuevo idioma.\nTu preferencia de idioma ha sido guardada.",
+        "restart_question": "¿Deseas reiniciar la aplicación ahora?"
+    },
+    "stats": {
+        "title": "📊 Estadísticas de Descarga",
+        "title_success": "¡Descarga Completada!",
+        "title_partial": "Descarga Completada con Errores",
+        "title_failed": "Descarga Fallida",
+        "title_finished": "Proceso Finalizado",
+        "completed": "Completados",
+        "failed": "Fallidos",
+        "skipped": "Ya existían",
+        "total_size": "Tamaño Total",
+        "details_title": "📋 Detalles",
+        "total_time": "🕐 Tiempo total: {time}",
+        "folder": "📁 Carpeta: {path}",
+        "files_ok": "✅ Archivos descargados correctamente: {count}",
+        "files_error": "\n❌ Archivos con errores: {count}",
+        "files_existed": "⏭️ Archivos que ya existían: {count}",
+        "failed_files": "Archivos fallidos:",
+        "and_more": "... y {count} más",
+        "open_folder": "📂 Abrir Carpeta",
+        "close": "✔ Cerrar",
+        "title_folder_not_found": "Carpeta no encontrada",
+        "folder_not_found": "La carpeta no existe:\n{folder_path}",
+        "title_folder_error": "No se pudo abrir la carpeta:\n{error}",
+        "folder_error": "No se pudo abrir la carpeta:\n{error}",
+        "fb_title": "Descarga completada",
+        "fb_completed": "✅ Descargados: {completed}\n",
+        "fb_failed": "❌ Fallidos: {failed}\n",
+        "fb_size": "💾 Tamaño: {size}\n",
+        "fb_time": "🕐 Tiempo: {time}\n"
+    },
+    "tooltips": {
+        "ilabel": "ℹ️",
+        "program_name": "El nombre del programa se obtiene de la URL de 3cat.\nPor ejemplo, para Dr.Slump: https://www.3cat.cat/3cat/dr-slump/ tenemos que poner '''dr-slump'''.\nPara Plats Bruts: https://www.3cat.cat/3cat/plats-bruts/ tenemos que poner plats-bruts.",
+        "workers": "Número de conexiones en paralelo para agilizar descargas. Si la descarga falla, reducir el número de descargas paralelas configuradas.",
+        "aria2c": "Descarga más rápida usando múltiples conexiones.",
+        "resume": "Sólo descarga .part pendientes de descarga. No usar si se quiere descargar nuevos capítulos.",
+        "output_folder": "Dentro de la carpeta indicada se generará otra carpeta con el nombre de la serie/programa a descargar."
+    },
+    "help": {
+        "title": "Ayuda - TV3 GUI Downloader",
+        "close": "Cerrar",
+        "label": "❓",
+        "content": [
+            "",
+            "🎬 TV3 GUI DOWNLOADER - GUÍA RÁPIDA",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "📌 CÓMO OBTENER EL NOMBRE DEL PROGRAMA:",
+            "",
+            "1. Ve a https://www.3cat.cat/",
+            "2. Busca tu programa/serie favorita",
+            "3. Copia el nombre de la URL después de \"/3cat/\"",
+            "   ",
+            "   Ejemplos:",
+            "   • https://www.3cat.cat/3cat/dr-slump/ → \"dr-slump\"",
+            "   • https://www.3cat.cat/3cat/plats-bruts/ → \"plats-bruts\"",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "⚙️ OPCIONES:",
+            "",
+            "• Calidad: Selecciona la resolución del vídeo",
+            "• Subtítulos: Elige el idioma de subtítulos",
+            "• Workers: Número de descargas simultáneas (más = más rápido)",
+            "• aria2c: Descarga ultra-rápida (requiere tener aria2c instalado)",
+            "• Only Resume: Solo continúa descargas interrumpidas",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "⌨️ ATAJOS DE TECLADO:",
+            "",
+            "• Ctrl+A: Seleccionar todos",
+            "• Ctrl+D: Deseleccionar todos",
+            "• Ctrl+I: Invertir selección",
+            "• Ctrl+F: Buscar/Filtrar",
+            "• F5: Refrescar programa actual",
+            "• Enter: Buscar programa (en el campo de búsqueda)",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "💡 CONSEJOS:",
+            "",
+            "• Usa \"Obtener Tamaños\" para ver el espacio necesario",
+            "• Filtra por temporada/capítulo para descargas específicas",
+            "• Los archivos .part se pueden reanudar activando \"Only Resume\"",
+            "• Si falla la descarga, reduce el número de Workers",
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "🔧 ¿Problemas? Revisa los logs en la pestaña correspondiente."
+        ]
+    }
+}
 
 # Configuración de CustomTkinter
 ctk.set_appearance_mode("dark")
@@ -146,13 +522,13 @@ class CTkToolTip:
 class DownloadStatsPopup(ctk.CTkToplevel):
     """Ventana popup para mostrar estadísticas de descarga"""
     
-    def __init__(self, parent, stats):
+    def __init__(self, parent, stats, translator):
         super().__init__(parent)
         
-        self.title("📊 Estadísticas de Descarga")
         self.geometry("500x650")  # ← Aumentado de 600 a 650
         self.resizable(False, False)
-        
+        self.translator = translator
+        self.title(self.translator.get("stats.title"))
         # Centrar en la pantalla
         self.update_idletasks()
         x = (self.winfo_screenwidth() // 2) - (500 // 2)
@@ -182,19 +558,19 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         # Determinar emoji según resultado
         if stats['failed'] == 0 and stats['completed'] > 0:
             emoji = "🎉"
-            title_text = "¡Descarga Completada!"
+            title_text = self.translator.get("stats.title_success")
             title_color = ("green", "lightgreen")
         elif stats['failed'] > 0 and stats['completed'] > 0:
             emoji = "⚠️"
-            title_text = "Descarga Completada con Errores"
+            title_text = self.translator.get("stats.title_partial")
             title_color = ("orange", "yellow")
         elif stats['failed'] > 0 and stats['completed'] == 0:
             emoji = "❌"
-            title_text = "Descarga Fallida"
+            title_text = self.translator.get("stats.title_failed")
             title_color = ("red", "lightcoral")
         else:
             emoji = "ℹ️"
-            title_text = "Proceso Finalizado"
+            title_text = self.translator.get("stats.title_finished")
             title_color = ("gray", "lightgray")
         
         title_label = ctk.CTkLabel(
@@ -246,13 +622,13 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         stats_grid.grid_columnconfigure(1, weight=1)
         
         # Estadísticas principales
-        create_stat_box(stats_grid, 0, 0, "✅", "Completados", stats['completed'], ("green", "lightgreen"))
-        create_stat_box(stats_grid, 0, 1, "❌", "Fallidos", stats['failed'], ("red", "lightcoral"))
+        create_stat_box(stats_grid, 0, 0, "✅", self.translator.get("stats.completed"), stats['completed'], ("green", "lightgreen"))
+        create_stat_box(stats_grid, 0, 1, "❌", self.translator.get("stats.failed"), stats['failed'], ("red", "lightcoral"))
         
         if stats.get('skipped', 0) > 0:
-            create_stat_box(stats_grid, 1, 0, "⏭️", "Ya existían", stats['skipped'], ("blue", "lightblue"))
+            create_stat_box(stats_grid, 1, 0, "⏭️", self.translator.get("stats.skipped"), stats['skipped'], ("blue", "lightblue"))
         
-        create_stat_box(stats_grid, 1, 1, "💾", "Tamaño Total", stats['total_size'], ("purple", "violet"))
+        create_stat_box(stats_grid, 1, 1, "💾", self.translator.get("stats.total_size"), stats['total_size'], ("purple", "violet"))
         
         # ===== DETALLES =====
         details_frame = ctk.CTkFrame(main_frame, corner_radius=10, fg_color=("gray90", "gray17"))
@@ -260,7 +636,7 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         
         details_label = ctk.CTkLabel(
             details_frame,
-            text="📋 Detalles",
+            text=self.translator.get("stats.details_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w"
         )
@@ -277,23 +653,23 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         
         # Construir texto de detalles
         details_content = []
-        details_content.append(f"🕐 Tiempo total: {stats['duration']}")
-        details_content.append(f"📁 Carpeta: {stats['folder']}")
+        details_content.append(self.translator.get("stats.total_time",time=stats['duration']))
+        details_content.append(self.translator.get("stats.folder",path=stats['folder']))
         
         if stats['completed'] > 0:
-            details_content.append(f"\n✅ Archivos descargados correctamente: {stats['completed']}")
+            details_content.append(self.translator.get("stats.files_ok",count=stats['completed']))
         
         if stats['failed'] > 0:
-            details_content.append(f"\n❌ Archivos con errores: {stats['failed']}")
+            details_content.append(self.translator.get("stats.files_error",count=stats['failed']))
             if stats.get('failed_list'):
-                details_content.append("\nArchivos fallidos:")
+                details_content.append(self.translator.get("stats.files_failed"))
                 for i, failed_file in enumerate(stats['failed_list'][:5], 1):
                     details_content.append(f"  {i}. {failed_file}")
                 if len(stats['failed_list']) > 5:
-                    details_content.append(f"  ... y {len(stats['failed_list']) - 5} más")
+                    details_content.append(self.translator.get("stats.and_more",count=len(stats['failed_list']) - 5))
         
         if stats.get('skipped', 0) > 0:
-            details_content.append(f"\n⏭️ Archivos que ya existían: {stats['skipped']}")
+            details_content.append(self.translator.get("stats.files_existed",count=stats['skipped']))
         
         details_text.insert("1.0", "\n".join(details_content))
         details_text.configure(state="disabled")
@@ -314,7 +690,7 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         # Botón para abrir carpeta
         open_folder_btn = ctk.CTkButton(
             buttons_frame,
-            text="📂 Abrir Carpeta",
+            text=self.translator.get("stats.open_folder"),
             command=lambda: self.open_folder(stats['folder']),
             height=40,
             font=ctk.CTkFont(size=13),
@@ -326,7 +702,7 @@ class DownloadStatsPopup(ctk.CTkToplevel):
         # Botón cerrar
         close_btn = ctk.CTkButton(
             buttons_frame,
-            text="✓ Cerrar",
+            text=self.translator.get("stats.close"),
             command=self.destroy,
             height=40,
             font=ctk.CTkFont(size=13),
@@ -349,14 +725,14 @@ class DownloadStatsPopup(ctk.CTkToplevel):
                 self.destroy()
             else:
                 messagebox.showwarning(
-                    "Carpeta no encontrada", 
-                    f"La carpeta no existe:\n{folder_path}",
+                    self.translator.get("stats.title_folder_not_found"), 
+                    self.translator.get("stats.folder_not_found",folder_path={folder_path}),
                     parent=self
                 )
         except Exception as e:
             messagebox.showerror(
-                "Error", 
-                f"No se pudo abrir la carpeta:\n{str(e)}",
+                self.translator.get("stats.title_folder_error"), 
+                self.translator.get("stats.folder_error",error={str(e)}),
                 parent=self
             )
 
@@ -364,10 +740,12 @@ class TV3_GUI(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Inicializar sistema de traducciones
+        self.translator = TranslationManager(default_lang="es", config_file="tv3_config.json")
         self.iconbitmap(resource_path("3catEM.ico"))
 
         # Configuración de la ventana
-        self.title("TV3 GUI Downloader")
+        self.title(self.translator.get("app.title"))
         self.geometry("1100x900")
         
         # Queue para comunicación entre threads
@@ -402,29 +780,36 @@ class TV3_GUI(ctk.CTk):
         self.update_file_progress()
 
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.QUALITY_ALL = "_ALL_"
+        self.QUALITY_NONE = "_NONE_"
+        self.SUBS_ALL = "_ALL_"
+        self.SUBS_NONE = "_NONE_"
+        self.available_qualities = []
+        self.available_subtitle_langs = []
         
     def show_stats_popup(self, stats):
         """Mostrar popup con estadísticas de descarga"""
         try:
-            popup = DownloadStatsPopup(self, stats)
+            popup = DownloadStatsPopup(self, stats, self.translator)
             popup.focus()
         except Exception as e:
             logger.error(f"Error mostrando popup de estadísticas: {e}")
             # Fallback a messagebox simple
-            message = (
-                f"✅ Descargados: {stats['completed']}\n"
-                f"❌ Fallidos: {stats['failed']}\n"
-                f"💾 Tamaño: {stats['total_size']}\n"
-                f"🕐 Tiempo: {stats['duration']}"
-            )
-            messagebox.showinfo("Descarga Completada", message)
+            message = "\n".join([
+                self.translator.get("stats.fb_completed",completed=stats['completed']),
+                self.translator.get("stats.fb_failed",failed=stats['failed']),
+                self.translator.get("stats.fb_size",size=stats['total_size']),
+                self.translator.get("stats.fb_time",time=stats['duration'])
+            ])
+            messagebox.showinfo( self.translator.get("stats.fb_title"), message)
 
     def on_closing(self):
         """Manejar el cierre de la ventana"""
         if self.is_downloading:
             result = messagebox.askyesno(
-                "Descarga en curso",
-                "Hay una descarga en curso. ¿Estás seguro de que quieres salir?\n\nLos archivos parciales se guardarán y podrás reanudar más tarde.",
+                self.translator.get("warnings.download_in_progress_title"),
+                self.translator.get("warnings.download_in_progress"),
                 icon='warning'
             )
             if not result:
@@ -439,35 +824,62 @@ class TV3_GUI(ctk.CTk):
         self.destroy()
 
     def create_widgets(self):
-        # ===== 1. TOP HEADER (FIJO) =====
+        # ===== 1. TOP HEADER CON SELECTOR DE IDIOMA =====
         self.top_header = ctk.CTkFrame(self, corner_radius=0, fg_color=("gray90", "gray20"))
         self.top_header.pack(side="top", fill="x", padx=0, pady=0)
-    
+        
+        # Frame para título y selector de idioma
+        header_content = ctk.CTkFrame(self.top_header, fg_color="transparent")
+        header_content.pack(fill="x", padx=15, pady=15)
+        
+        # Selector de idioma (izquierda)
+        lang_frame = ctk.CTkFrame(header_content, fg_color="transparent")
+        lang_frame.pack(side="left")
+        
+        # Configurar el valor inicial del selector basado en el idioma cargado
+        initial_lang_name = self.translator.get_language_name(self.translator.current_lang)
+        self.lang_var = ctk.StringVar(value=initial_lang_name)
+        
+        lang_options = [
+            self.translator.get_language_name(lang) 
+            for lang in self.translator.available_languages
+        ]
+        
+        self.lang_combo = ctk.CTkComboBox(
+            lang_frame,
+            values=lang_options,
+            variable=self.lang_var,
+            width=120,
+            command=self.change_language
+        )
+        self.lang_combo.pack(side="left", padx=5)
+        
+        # Título (centro)
         title_label = ctk.CTkLabel(
-            self.top_header,
-            text="🎬 TV3 GUI Downloader",
+            header_content,
+            text=self.translator.get("app.title"),
             font=ctk.CTkFont(size=24, weight="bold")
         )
-        title_label.pack(pady=15)
-
+        title_label.pack(side="left", expand=True)
+        
+        # Botón ayuda (derecha)
         help_btn = ctk.CTkButton(
-            self.top_header,
-            text="❓",
+            header_content,
+            text=self.translator.get("help.label"),
             width=30,
             height=30,
             corner_radius=15,
             command=self.show_help,
-            #fg_color="blue",
             border_width=0
         )
-        help_btn.pack(side="right", padx=15)
+        help_btn.pack(side="right", padx=5)
 
         self.status_bar = ctk.CTkFrame(self, height=25, corner_radius=0, fg_color=("gray80", "gray25"))
         self.status_bar.pack(side="bottom", fill="x")
 
         self.status_label = ctk.CTkLabel(
             self.status_bar,
-            text="📊 Listo | 0 archivos | 0 B",
+            text=self.translator.get("status.ready"),
             font=ctk.CTkFont(size=11),
             anchor="w"
         )
@@ -475,7 +887,7 @@ class TV3_GUI(ctk.CTk):
 
         self.version_label = ctk.CTkLabel(
             self.status_bar,
-            text="v1.0 GUI",
+            text=self.translator.get("app.version"),
             font=ctk.CTkFont(size=10),
             text_color=("gray50", "gray60")
         )
@@ -499,10 +911,10 @@ class TV3_GUI(ctk.CTk):
         )
         self.tabs.pack(fill="both", expand=True)
 
-        tab_config = self.tabs.add("⚙️ Configuración")
-        tab_preview = self.tabs.add("📋 Lista capítulos a descargar")
-        tab_progress = self.tabs.add("📊 Progreso")  # ← NUEVA PESTAÑA
-        tab_logs = self.tabs.add("📜 Logs")
+        tab_config = self.tabs.add(self.translator.get("tabs.config"))
+        tab_preview = self.tabs.add(self.translator.get("tabs.preview"))
+        tab_progress = self.tabs.add(self.translator.get("tabs.progress"))
+        tab_logs = self.tabs.add(self.translator.get("tabs.logs"))
 
         # ========================================
         # TAB 1: CONFIGURACIÓN
@@ -510,21 +922,21 @@ class TV3_GUI(ctk.CTk):
         config_frame = ctk.CTkFrame(tab_config, corner_radius=10)
         config_frame.pack(fill="x", pady=20)
     
-        ctk.CTkLabel(config_frame, text="⚙️ Configuración", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
+        ctk.CTkLabel(config_frame, text=self.translator.get("config.title"), font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=15, pady=10)
     
         # Búsqueda
         input_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         input_frame.pack(fill="x", padx=15, pady=5)
     
-        ctk.CTkLabel(input_frame, text="Programa:", width=80, anchor="w").pack(side="left")
-        infoNombonic = ctk.CTkLabel(input_frame, text="ℹ️", cursor="hand2")
+        ctk.CTkLabel(input_frame, text=self.translator.get("config.program_label"), width=80, anchor="w").pack(side="left")
+        infoNombonic = ctk.CTkLabel(input_frame, text=self.translator.get("tooltips.ilabel"), cursor="hand2")
         infoNombonic.pack(side="left", padx=(0, 15))
-        CTkToolTip(infoNombonic, "El nombre del programa se obtiene de la URL de 3cat.\nPor ejemplo, para Dr.Slump: https://www.3cat.cat/3cat/dr-slump/ tenemos que poner '''dr-slump'''.\nPara Plats Bruts: https://www.3cat.cat/3cat/plats-bruts/ tenemos que poner plats-bruts.")
-        self.program_entry = ctk.CTkEntry(input_frame, placeholder_text="ej: dr-slump")
+        CTkToolTip(infoNombonic, self.translator.get("tooltips.program_name"))
+        self.program_entry = ctk.CTkEntry(input_frame, placeholder_text=self.translator.get("config.program_placeholder"))
         self.program_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.program_entry.bind("<Return>", lambda e: self.search_program())
     
-        self.search_btn = ctk.CTkButton(input_frame, text="🔍 Buscar", width=100, command=self.search_program)
+        self.search_btn = ctk.CTkButton(input_frame, text=self.translator.get("config.search_btn"), width=100, command=self.search_program)
         self.search_btn.pack(side="left")
     
         self.info_label = ctk.CTkLabel(config_frame, text="", text_color=("gray50", "gray60"), anchor="w")
@@ -537,66 +949,66 @@ class TV3_GUI(ctk.CTk):
         # Calidad
         q_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
         q_frame.grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(q_frame, text="Calidad:", width=60, anchor="w").pack(side="left")
-        self.quality_var = ctk.StringVar(value="Todas")
-        self.quality_combo = ctk.CTkComboBox(q_frame, values=["Todas"], variable=self.quality_var, width=140, state="disabled", command=self.on_quality_change)
+        ctk.CTkLabel(q_frame, text=self.translator.get("config.quality_label"), width=60, anchor="w").pack(side="left")
+        self.quality_var = ctk.StringVar(value=self.translator.get("config.all_quality"))
+        self.quality_combo = ctk.CTkComboBox(q_frame, values=[self.translator.get("config.all_quality")], variable=self.quality_var, width=140, state="disabled", command=self.on_quality_change)
         self.quality_combo.pack(side="left")
 
         # Subtitulos
         s_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
         s_frame.grid(row=0, column=1, sticky="w", padx=20)
-        ctk.CTkLabel(s_frame, text="Subtitulos:", width=80, anchor="w").pack(side="left")
-        self.vttlang_var = ctk.StringVar(value="Todos")
-        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=["Todos"], variable=self.vttlang_var, width=140, state="disabled", command=self.on_vttlang_change)
+        ctk.CTkLabel(s_frame, text=self.translator.get("config.subtitles_label"), width=80, anchor="w").pack(side="left")
+        self.vttlang_var = ctk.StringVar(value=self.translator.get("config.all_subs"))
+        self.vttlang_combo = ctk.CTkComboBox(s_frame, values=[self.translator.get("config.all_subs")], variable=self.vttlang_var, width=140, state="disabled", command=self.on_vttlang_change)
         self.vttlang_combo.pack(side="left")
 
         # Workers
         w_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
         w_frame.grid(row=0, column=2, sticky="w", padx=20)
-        ctk.CTkLabel(w_frame, text="Workers:", width=60, anchor="w").pack(side="left")
+        ctk.CTkLabel(w_frame, text=self.translator.get("config.workers_label"), width=60, anchor="w").pack(side="left")
         self.workers_var = ctk.IntVar(value=3)
         self.workers_slider = ctk.CTkSlider(w_frame, from_=1, to=10, number_of_steps=9, variable=self.workers_var, width=100)
         self.workers_slider.pack(side="left", padx=5)
         self.workers_label = ctk.CTkLabel(w_frame, text="3", width=20)
         self.workers_label.pack(side="left")
         self.workers_slider.configure(command=lambda v: self.workers_label.configure(text=str(int(v))))
-        infoWorkers = ctk.CTkLabel(w_frame, text="ℹ️", cursor="hand2")
+        infoWorkers = ctk.CTkLabel(w_frame, text=self.translator.get("tooltips.ilabel"), cursor="hand2")
         infoWorkers.pack(side="left")
-        CTkToolTip(infoWorkers, "Número de conexiones en paralelo para agilizar descargas. Si la descarga falla, reducir el número de descargas paralelas configuradas.")
+        CTkToolTip(infoWorkers,self.translator.get("tooltips.workers"))
 
         # Checks
         check_frame = ctk.CTkFrame(opts_grid, fg_color="transparent")
         check_frame.grid(row=0, column=3, sticky="w", padx=20)
         self.aria2_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(check_frame, text="Usar aria2c", variable=self.aria2_var).pack(side="left")
-        infoAria2c = ctk.CTkLabel(check_frame, text="ℹ️", cursor="hand2")
+        ctk.CTkCheckBox(check_frame, text=self.translator.get("config.aria2_checkbox"), variable=self.aria2_var).pack(side="left")
+        infoAria2c = ctk.CTkLabel(check_frame, text=self.translator.get("tooltips.ilabel"), cursor="hand2")
         infoAria2c.pack(side="left", padx=(0, 15))
-        CTkToolTip(infoAria2c, "Descarga más rápida usando múltiples conexiones.")
+        CTkToolTip(infoAria2c,self.translator.get("tooltips.aria2c"))
         self.resume_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(check_frame, text="Modo Only Resume", variable=self.resume_var).pack(side="left")
-        infoResume = ctk.CTkLabel(check_frame, text="ℹ️", cursor="hand2")
+        ctk.CTkCheckBox(check_frame, text=self.translator.get("config.resume_checkbox"), variable=self.resume_var).pack(side="left")
+        infoResume = ctk.CTkLabel(check_frame, text=self.translator.get("tooltips.ilabel"), cursor="hand2")
         infoResume.pack(side="left", padx=(0, 15))
-        CTkToolTip(infoResume, "Sólo descarga .part pendientes de descarga. No usar si se quiere descargar nuevos capítulos.")
+        CTkToolTip(infoResume,self.translator.get("tooltips.resume"))
 
         # Carpeta Output
         out_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         out_frame.pack(fill="x", padx=15, pady=10)
-        ctk.CTkLabel(out_frame, text="Guardar en:", width=80, anchor="w").pack(side="left")
+        ctk.CTkLabel(out_frame, text=self.translator.get("config.output_label"), width=80, anchor="w").pack(side="left")
         self.output_entry = ctk.CTkEntry(out_frame)
         self.output_entry.insert(0, os.path.join(os.getcwd(), "downloads"))
         self.output_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        self.browse_btn = ctk.CTkButton(out_frame, text="📁", width=40, command=self.browse_folder)
+        self.browse_btn = ctk.CTkButton(out_frame, text=self.translator.get("config.browse_btn"), width=40, command=self.browse_folder)
         self.browse_btn.pack(side="left")
-        infoOutput = ctk.CTkLabel(out_frame, text="ℹ️", cursor="hand2")
+        infoOutput = ctk.CTkLabel(out_frame, text=self.translator.get("tooltips.ilabel"), cursor="hand2")
         infoOutput.pack(side="left", padx=(15, 0))
-        CTkToolTip(infoOutput, "Dentro de la carpeta indicada se generará otra carpeta con el nombre de la serie/programa a descargar.")
+        CTkToolTip(infoOutput,self.translator.get("tooltips.output_folder"))
 
         # Botón Acción
         act_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         act_frame.pack(fill="x", padx=15, pady=(5, 15))
         self.download_btn = ctk.CTkButton(
             act_frame, 
-            text="⬇️ Descargar Seleccionados", 
+            text=self.translator.get("config.download_btn"), 
             command=self.start_download, 
             height=40, 
             fg_color=("green", "darkgreen"), 
@@ -617,7 +1029,7 @@ class TV3_GUI(ctk.CTk):
     
         ctk.CTkLabel(
             preview_header, 
-            text="📋 Vista Previa de Capítulos", 
+            text=self.translator.get("preview.title"), 
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
     
@@ -629,35 +1041,35 @@ class TV3_GUI(ctk.CTk):
         controls_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         controls_frame.pack(fill="x", padx=15, pady=(0, 10))
     
-        ctk.CTkButton(controls_frame, text="✓ Todos", width=100, command=self.select_all).pack(side="left", padx=5)
-        ctk.CTkButton(controls_frame, text="✓ Filtrados", width=100, command=self.select_filter).pack(side="left", padx=5)
-        ctk.CTkButton(controls_frame, text="✗ Ninguno", width=100, command=self.deselect_all).pack(side="left", padx=5)
-        ctk.CTkButton(controls_frame, text="✗ Filtrados", width=100, command=self.deselect_filter).pack(side="left", padx=5)
-        ctk.CTkButton(controls_frame, text="🔄 Invertir", width=100, command=self.invert_selection).pack(side="left", padx=5)
+        self.btn_select_all = ctk.CTkButton(controls_frame, text=self.translator.get("preview.select_all"), width=100, command=self.select_all).pack(side="left", padx=5)
+        self.btn_select_filtered = ctk.CTkButton(controls_frame, text=self.translator.get("preview.select_filtered"), width=100, command=self.select_filter).pack(side="left", padx=5)
+        self.btn_deselect_all = ctk.CTkButton(controls_frame, text=self.translator.get("preview.deselect_all"), width=100, command=self.deselect_all).pack(side="left", padx=5)
+        self.btn_deselect_filtered = ctk.CTkButton(controls_frame, text=self.translator.get("preview.deselect_filtered"), width=100, command=self.deselect_filter).pack(side="left", padx=5)
+        self.btn_invert = ctk.CTkButton(controls_frame, text=self.translator.get("preview.invert_selection"), width=100, command=self.invert_selection).pack(side="left", padx=5)
     
         # Botón para obtener tamaños
         self.fetch_sizes_btn = ctk.CTkButton(
             controls_frame, 
-            text="📏 Obtener Tamaños", 
+            text=self.translator.get("preview.fetch_sizes"), 
             width=140, 
             command=self.fetch_file_sizes,
             fg_color=("blue", "darkblue")
         )
         self.fetch_sizes_btn.pack(side="left", padx=5)
     
-        self.selection_info = ctk.CTkLabel(controls_frame, text="Seleccionados: 0/0", font=ctk.CTkFont(size=12))
+        self.selection_info = ctk.CTkLabel(controls_frame, text=self.translator.get("preview.selected_info",selected="0",total="0"), font=ctk.CTkFont(size=12))
         self.selection_info.pack(side="right", padx=15)
     
         # Fila 2: Filtro de búsqueda
         filter_frame = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
         filter_frame.pack(fill="x", padx=15, pady=(0, 10))
     
-        ctk.CTkLabel(filter_frame, text="🔍 Filtrar:", width=60, anchor="w").pack(side="left", padx=(0, 5))
-        self.filter_entry = ctk.CTkEntry(filter_frame, placeholder_text="Buscar por título, temporada, capítulo...")
+        ctk.CTkLabel(filter_frame, text=self.translator.get("preview.filter_label"), width=60, anchor="w").pack(side="left", padx=(0, 5))
+        self.filter_entry = ctk.CTkEntry(filter_frame, placeholder_text=self.translator.get("preview.filter_placeholder"))
         self.filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
         self.filter_entry.bind("<KeyRelease>", lambda e: self.apply_filter())
     
-        ctk.CTkButton(filter_frame, text="✖ Limpiar", width=80, command=self.clear_filter).pack(side="left", padx=5)
+        self.btn_clear_filter = ctk.CTkButton(filter_frame, text=self.translator.get("preview.clear_filter"), width=80, command=self.clear_filter).pack(side="left", padx=5)
     
         # Tabla
         self.preview_table_container = ctk.CTkFrame(self.preview_controls_container, fg_color="transparent")
@@ -724,13 +1136,13 @@ class TV3_GUI(ctk.CTk):
         hsb.configure(command=self.tree.xview)
     
         # Configurar columnas
-        self.tree.heading("sel", text="✓", command=lambda: self.sort_by_column("sel"))
-        self.tree.heading("temp", text="Temp", command=lambda: self.sort_by_column("temp"))
-        self.tree.heading("cap", text="Cap", command=lambda: self.sort_by_column("cap"))
-        self.tree.heading("titulo", text="Título", command=lambda: self.sort_by_column("titulo"))
-        self.tree.heading("calidad", text="Calidad", command=lambda: self.sort_by_column("calidad"))
-        self.tree.heading("tipo", text="Tipo", command=lambda: self.sort_by_column("tipo"))
-        self.tree.heading("tamaño", text="Tamaño", command=lambda: self.sort_by_column("tamaño"))
+        self.tree.heading("sel", text=self.translator.get("preview.col_selected"), command=lambda: self.sort_by_column("sel"))
+        self.tree.heading("temp", text=self.translator.get("preview.col_season"), command=lambda: self.sort_by_column("temp"))
+        self.tree.heading("cap", text=self.translator.get("preview.col_episode"), command=lambda: self.sort_by_column("cap"))
+        self.tree.heading("titulo", text=self.translator.get("preview.col_title"), command=lambda: self.sort_by_column("titulo"))
+        self.tree.heading("calidad", text=self.translator.get("preview.col_quality"), command=lambda: self.sort_by_column("calidad"))
+        self.tree.heading("tipo", text=self.translator.get("preview.col_type"), command=lambda: self.sort_by_column("tipo"))
+        self.tree.heading("tamaño", text=self.translator.get("preview.col_size"), command=lambda: self.sort_by_column("tamaño"))
     
         self.tree.column("sel", width=40, anchor="center")
         self.tree.column("temp", width=60, anchor="center")
@@ -767,14 +1179,14 @@ class TV3_GUI(ctk.CTk):
         prog_header.pack(fill="x", pady=(0, 15))
         ctk.CTkLabel(
             prog_header, 
-            text="📊 Estado y Progreso", 
+            text=self.translator.get("progress.title"), 
             font=ctk.CTkFont(size=18, weight="bold")
         ).pack(side="left")
 
         # Info de estado
         self.progress_info = ctk.CTkLabel(
             progress_container,
-            text="Estado: Esperando órdenes...",
+            text=self.translator.get("progress.waiting"),
             anchor="w",
             font=ctk.CTkFont(size=13)
         )
@@ -790,13 +1202,13 @@ class TV3_GUI(ctk.CTk):
             progress_container,
             height=400,  # Más altura al estar en una pestaña
             fg_color=("gray95", "gray10"),
-            label_text="⚡ Descargas Activas"
+            label_text=self.translator.get("progress.active_downloads")
         )
         self.downloads_frame.pack(fill="both", expand=True, pady=(5, 0))
     
         self.no_downloads_label = ctk.CTkLabel(
             self.downloads_frame,
-            text="No hay descargas activas",
+            text=self.translator.get("progress.no_downloads"),
             text_color=("gray50", "gray60"),
             font=ctk.CTkFont(size=13)
         )
@@ -814,7 +1226,7 @@ class TV3_GUI(ctk.CTk):
     
         ctk.CTkLabel(
             log_header, 
-            text="📋 Registro de actividad", 
+            text=self.translator.get("logs.title"), 
             font=ctk.CTkFont(size=16, weight="bold")
         ).pack(side="left")
     
@@ -830,13 +1242,217 @@ class TV3_GUI(ctk.CTk):
         )
         self.log_text.pack(fill="both", expand=True)
     
-        self.add_log("✅ Interfaz cargada con Vista Previa")
-        self.add_log("ℹ️ Busca un programa para ver los capítulos disponibles")
+        self.add_log(self.translator.get("logs.interface_loaded"))
+        self.add_log(self.translator.get("logs.search_program"))
+
+    def change_language(self, selection):
+        """Cambiar idioma de la aplicación"""
+        # Encontrar código de idioma desde el nombre mostrado
+        lang_code = None
+        lang_code = self.translator.get_lang_code_from_name(selection)
+        
+        if lang_code and lang_code != self.translator.current_lang:
+            # Cambiar idioma y guardarlo automáticamente
+            self.translator.set_language(lang_code, save=True)
+            self.add_log(f"🌐 {self.translator.get('messages.language_changed', lang=selection)}")
+            
+            # Mostrar advertencia sobre pestañas y sugerencia de reinicio
+            restart = messagebox.askyesno(
+                self.translator.get("info.language_change_title"),
+                self.translator.get("info.language_change_message") + "\n\n" + 
+                self.translator.get("info.language_restart_suggestion") + "\n\n" +
+                self.translator.get("info.restart_question"),
+                icon='info'
+            )
+            
+            # Actualizar toda la interfaz
+            if restart:
+                self.restart_application()
+            else:
+                self.refresh_ui_texts() 
+
+    def recreate_tabs(self):
+        """Recrear las pestañas con el nuevo idioma (AVANZADO - puede causar pérdida de estado)"""
+        # ADVERTENCIA: Este método destruye y recrea todas las pestañas
+        # Úsalo solo si estás dispuesto a perder el estado actual de las pestañas
+        
+        # Guardar la pestaña activa actual
+        try:
+            current_tab = self.tabs.get()
+        except:
+            current_tab = None
+        
+        # Destruir el tabview actual
+        self.tabs.destroy()
+        
+        # Recrear el tabview
+        content_frame = self.main_scroll  # o el frame padre correspondiente
+        self.tabs = ctk.CTkTabview(
+            content_frame,
+            width=1000,
+            height=600
+        )
+        self.tabs.pack(fill="both", expand=True)
+        
+        # Crear pestañas con nuevos nombres
+        tab_config = self.tabs.add(self.translator.get("tabs.config"))
+        tab_preview = self.tabs.add(self.translator.get("tabs.preview"))
+        tab_progress = self.tabs.add(self.translator.get("tabs.progress"))
+        tab_logs = self.tabs.add(self.translator.get("tabs.logs"))
+        
+        # PROBLEMA: Ahora necesitarías recrear TODO el contenido de cada pestaña
+        # Esto es muy complejo y propenso a errores
+        # Por eso NO recomiendo este enfoque
+        
+        # Restaurar pestaña activa (mapeo aproximado)
+        tab_map = {
+            "Configuración": "tabs.config",
+            "Configuració": "tabs.config",
+            "Settings": "tabs.config",
+            # ... más mapeos
+        }
+        
+        self.add_log("⚠️ Las pestañas han sido recreadas. Puede que se haya perdido información.")
+    
+    def refresh_ui_texts(self):
+        """Actualizar todos los textos de la UI con el nuevo idioma"""
+        # Actualizar título de ventana
+        self.title(self.translator.get("app.title"))
+    
+        # NOTA: CTkTabview no permite cambiar el texto de las pestañas después de crearlas
+        # El cambio de idioma completo (incluyendo pestañas) se aplicará al reiniciar la aplicación
+    
+        # Actualizar botones principales (solo si no están deshabilitados)
+        if hasattr(self, 'search_btn') and self.search_btn.cget("state") != "disabled":
+            self.search_btn.configure(text=self.translator.get("config.search_btn"))
+    
+        if hasattr(self, 'download_btn') and self.download_btn.cget("state") != "disabled":
+            self.download_btn.configure(text=self.translator.get("config.download_btn"))
+    
+        if hasattr(self, 'fetch_sizes_btn') and self.fetch_sizes_btn.cget("state") != "disabled":
+            self.fetch_sizes_btn.configure(text=self.translator.get("preview.fetch_sizes"))
+    
+        # Actualizar botones de selección (usando referencias directas)
+        if hasattr(self, 'btn_select_all'):
+            self.btn_select_all.configure(text=self.translator.get("preview.select_all"))
+    
+        if hasattr(self, 'btn_select_filtered'):
+            self.btn_select_filtered.configure(text=self.translator.get("preview.select_filtered"))
+    
+        if hasattr(self, 'btn_deselect_all'):
+            self.btn_deselect_all.configure(text=self.translator.get("preview.deselect_all"))
+    
+        if hasattr(self, 'btn_deselect_filtered'):
+            self.btn_deselect_filtered.configure(text=self.translator.get("preview.deselect_filtered"))
+    
+        if hasattr(self, 'btn_invert'):
+            self.btn_invert.configure(text=self.translator.get("preview.invert_selection"))
+    
+        if hasattr(self, 'btn_clear_filter'):
+            self.btn_clear_filter.configure(text=self.translator.get("preview.clear_filter"))
+    
+        # Actualizar labels de la barra de estado
+        if hasattr(self, 'version_label'):
+            self.version_label.configure(text=self.translator.get("app.version"))
+    
+        # Actualizar placeholders
+        if hasattr(self, 'filter_entry'):
+            self.filter_entry.configure(placeholder_text=self.translator.get("preview.filter_placeholder"))
+        
+        if hasattr(self, 'program_entry'):
+            self.program_entry.configure(placeholder_text=self.translator.get("config.program_placeholder"))
+    
+        # Actualizar label de progreso (solo si está en estado inicial)
+        if hasattr(self, 'progress_info'):
+            self.progress_info.configure(text=self.translator.get("progress.waiting"))
+    
+        # Actualizar headers de la tabla
+        if hasattr(self, 'tree'):
+            self.tree.heading("sel", text=self.translator.get("preview.col_selected"))
+            self.tree.heading("temp", text=self.translator.get("preview.col_season"))
+            self.tree.heading("cap", text=self.translator.get("preview.col_episode"))
+            self.tree.heading("titulo", text=self.translator.get("preview.col_title"))
+            self.tree.heading("calidad", text=self.translator.get("preview.col_quality"))
+            self.tree.heading("tipo", text=self.translator.get("preview.col_type"))
+            self.tree.heading("tamaño", text=self.translator.get("preview.col_size"))
+    
+        # Actualizar combo de calidad
+        if hasattr(self, 'quality_combo') and hasattr(self, 'available_qualities'):
+            # Recrear la lista display con las nuevas traducciones
+            quality_display = [
+                self.translator.get("config.all_quality"),
+                self.translator.get("config.no_video")
+            ] + self.available_qualities
+        
+            self.quality_combo.configure(values=quality_display)
+        
+            # Restaurar la selección LÓGICA con el nuevo idioma
+            if hasattr(self, 'current_quality_selection'):
+                if self.current_quality_selection == self.QUALITY_ALL:
+                    self.quality_var.set(self.translator.get("config.all_quality"))
+                elif self.current_quality_selection == self.QUALITY_NONE:
+                    self.quality_var.set(self.translator.get("config.no_video"))
+                else:
+                    # Es una calidad numérica, no cambia
+                    self.quality_var.set(self.current_quality_selection)
+    
+        # Actualizar combo de subtítulos
+        if hasattr(self, 'vttlang_combo') and hasattr(self, 'available_subtitle_langs'):
+            # Recrear la lista display
+            subs_display = [
+                self.translator.get("config.all_subs"),
+                self.translator.get("config.no_subs")
+            ] + self.available_subtitle_langs
+        
+            self.vttlang_combo.configure(values=subs_display)
+        
+            # Restaurar la selección LÓGICA
+            if hasattr(self, 'current_subs_selection'):
+                if self.current_subs_selection == self.SUBS_ALL:
+                    self.vttlang_var.set(self.translator.get("config.all_subs"))
+                elif self.current_subs_selection == self.SUBS_NONE:
+                    self.vttlang_var.set(self.translator.get("config.no_subs"))
+                else:
+                    # Es un idioma real, no cambia
+                    self.vttlang_var.set(self.current_subs_selection)
+
+        # Actualizar info de selección
+        if hasattr(self, 'selection_info'):
+            self.update_selection_info()
+    
+        # Actualizar status bar
+        if hasattr(self, 'status_label'):
+            selected = sum(1 for item in self.all_items if item["selected"]) if hasattr(self, 'all_items') else 0
+            total = len(self.all_items) if hasattr(self, 'all_items') else 0
+            if selected > 0 or total > 0:
+                total_size = sum(item["tamaño_bytes"] for item in self.all_items if item["selected"]) if hasattr(self, 'all_items') else 0
+                self.status_label.configure(
+                    text=self.translator.get("status.selected", count=selected, total=total, size=format_size(total_size))
+                )
+            else:
+                self.status_label.configure(text=self.translator.get("status.ready"))
+    
+        # Log de cambio completado
+        self.add_log(self.translator.get("messages.ui_updated"))
+
+    def restart_application(self):
+        """Reinicia la aplicación"""
+        try:
+            python = sys.executable
+            args = sys.argv
+        
+            # Lanzar nuevo proceso
+            subprocess.Popen([python] + args)
+        except Exception as e:
+            logger.error(f"Error al reiniciar la aplicación: {e}")
+        finally:
+            # Cerrar app actual
+            self.destroy()
 
     def show_help(self):
         """Mostrar ventana de ayuda"""
         help_window = ctk.CTkToplevel(self)
-        help_window.title("Ayuda - TV3 GUI Downloader")
+        help_window.title(self.translator.get("help.title"))
         help_window.geometry("600x500")
         help_window.transient(self)
         help_window.grab_set()
@@ -845,55 +1461,7 @@ class TV3_GUI(ctk.CTk):
         text = ctk.CTkTextbox(help_window, wrap="word", font=ctk.CTkFont(size=12))
         text.pack(fill="both", expand=True, padx=20, pady=20)
     
-        help_text = """
-🎬 TV3 GUI DOWNLOADER - GUÍA RÁPIDA
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📌 CÓMO OBTENER EL NOMBRE DEL PROGRAMA:
-
-1. Ve a https://www.3cat.cat/
-2. Busca tu programa/serie favorita
-3. Copia el nombre de la URL después de "/3cat/"
-   
-   Ejemplos:
-   • https://www.3cat.cat/3cat/dr-slump/ → "dr-slump"
-   • https://www.3cat.cat/3cat/plats-bruts/ → "plats-bruts"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⚙️ OPCIONES:
-
-• Calidad: Selecciona la resolución del vídeo
-• Subtítulos: Elige el idioma de subtítulos
-• Workers: Número de descargas simultáneas (más = más rápido)
-• aria2c: Descarga ultra-rápida (requiere tener aria2c instalado)
-• Only Resume: Solo continúa descargas interrumpidas
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⌨️ ATAJOS DE TECLADO:
-
-• Ctrl+A: Seleccionar todos
-• Ctrl+D: Deseleccionar todos
-• Ctrl+I: Invertir selección
-• Ctrl+F: Buscar/Filtrar
-• F5: Refrescar programa actual
-• Enter: Buscar programa (en el campo de búsqueda)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 CONSEJOS:
-
-• Usa "Obtener Tamaños" para ver el espacio necesario
-• Filtra por temporada/capítulo para descargas específicas
-• Los archivos .part se pueden reanudar activando "Only Resume"
-• Si falla la descarga, reduce el número de Workers
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📧 ¿Problemas? Revisa los logs en la pestaña correspondiente.
-"""
+        help_text = self.translator.get("help.content")
     
         text.insert("1.0", help_text)
         text.configure(state="disabled")
@@ -901,7 +1469,7 @@ class TV3_GUI(ctk.CTk):
         # Botón cerrar
         close_btn = ctk.CTkButton(
             help_window,
-            text="Cerrar",
+            text=self.translator.get("help.close"),
             command=help_window.destroy,
             width=100
         )
@@ -939,7 +1507,7 @@ class TV3_GUI(ctk.CTk):
         # Aplicar filtro (inicialmente muestra todo)
         self.apply_filter()
         
-        self.add_log(f"📊 Cargados {len(items)} elementos en la vista previa")
+        self.add_log(self.translator.get("messages.items_loaded",count=len(items)))
     
     def apply_filter(self):
         """Aplicar filtro de búsqueda a la tabla"""
@@ -1000,17 +1568,17 @@ class TV3_GUI(ctk.CTk):
         # Actualizar headers para mostrar indicador de orden
         for col in ("sel", "temp", "cap", "titulo", "calidad", "tipo", "tamaño"):
             text = {
-                "sel": "✓",
-                "temp": "Temp",
-                "cap": "Cap",
-                "titulo": "Título",
-                "calidad": "Calidad",
-                "tipo": "Tipo",
-                "tamaño": "Tamaño"
+                "sel": self.translator.get("preview.col_selected"),
+                "temp": self.translator.get("preview.col_season"),
+                "cap": self.translator.get("preview.col_episode"),
+                "titulo": self.translator.get("preview.col_title"),
+                "calidad": self.translator.get("preview.col_quality"),
+                "tipo": self.translator.get("preview.col_type"),
+                "tamaño": self.translator.get("preview.col_size")
             }[col]
             
             if col == column:
-                indicator = " ▼" if self.sort_reverse else " ▲"
+                indicator = self.translator.get("preview.col_order_desc") if self.sort_reverse else self.translator.get("preview.col_order_asc")
                 text += indicator
             
             self.tree.heading(col, text=text)
@@ -1048,11 +1616,11 @@ class TV3_GUI(ctk.CTk):
     def fetch_file_sizes(self):
         """Obtener tamaños de archivos mediante HEAD requests"""
         if not self.all_items:
-            messagebox.showwarning("Advertencia", "No hay archivos cargados")
+            messagebox.showwarning(self.translator.get("warnings.warn_label"), self.translator.get("warnings.no_items"))
             return
         
-        self.fetch_sizes_btn.configure(state="disabled", text="⏳ Obteniendo...")
-        self.add_log("📏 Iniciando obtención de tamaños...")
+        self.fetch_sizes_btn.configure(state="disabled", text=self.translator.get("preview.fetch_sizes_action"))
+        self.add_log(self.translator.get("logs.fetch_sizes"))
         
         def fetch_thread():
             try:
@@ -1119,11 +1687,11 @@ class TV3_GUI(ctk.CTk):
                 
                 # Actualizar tabla
                 self.after(0, self.apply_filter)
-                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text="📏 Obtener Tamaños"))
+                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text=self.translator.get("preview.fetch_sizes")))
                 
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error obteniendo tamaños: {str(e)}"))
-                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text="📏 Obtener Tamaños"))
+                self.after(0, lambda: self.fetch_sizes_btn.configure(state="normal", text=self.translator.get("preview.fetch_sizes")))
         
         threading.Thread(target=fetch_thread, daemon=True).start()
 
@@ -1141,7 +1709,7 @@ class TV3_GUI(ctk.CTk):
                 
                 # Actualizar visual
                 values = list(self.tree.item(iid)["values"])
-                values[0] = "✓" if not current else ""
+                values[0] = self.translator.get("preview.col_selected") if not current else ""
                 self.tree.item(iid, values=values)
         
         self.update_selection_info()
@@ -1184,15 +1752,15 @@ class TV3_GUI(ctk.CTk):
         # Actualizar info de selección
         if total_size > 0:
             self.selection_info.configure(
-                text=f"Seleccionados: {selected}/{total} ({format_size(total_size)})"
+                text=self.translator.get("preview.selected_with_size",selected=selected,total=total,size=format_size(total_size))
             )
             # NUEVO: Actualizar barra de estado
             self.status_label.configure(
-                text=f"📊 {selected} seleccionados de {total} | {format_size(total_size)}"
+                text=self.translator.get("status.selected",count=selected,total=total,size=format_size(total_size))
             )
         else:
-            self.selection_info.configure(text=f"Seleccionados: {selected}/{total}")
-            self.status_label.configure(text=f"📊 {selected} seleccionados de {total} | 0 B")
+            self.selection_info.configure(text=self.translator.get("preview.selected_info",selected=selected,total=total))
+            self.status_label.configure(text=self.translator.get("status.selected",count=selected,total=total,size="0 B"))
 
     def get_selected_items(self):
         """Obtener lista de items seleccionados"""
@@ -1224,12 +1792,12 @@ class TV3_GUI(ctk.CTk):
                     self.progress_info.configure(text=progress_data["text"])
                 elif progress_data["type"] == "complete":
                     self.progress_bar.set(1.0)
-                    self.progress_info.configure(text="✅ Proceso completado")
+                    self.progress_info.configure(text=self.translator.get("messages.completed"))
                     self.is_downloading = False
                     self.clear_active_downloads()
                     self.enable_controls()
                 elif progress_data["type"] == "error":
-                    self.progress_info.configure(text=f"❌ Error: {progress_data['text']}")
+                    self.progress_info.configure(text=self.translator.get("messages.error",message=progress_data['text']))
                     self.is_downloading = False
                     self.clear_active_downloads()
                     self.enable_controls()
@@ -1304,22 +1872,31 @@ class TV3_GUI(ctk.CTk):
     def search_program(self):
         program_name = self.program_entry.get().strip()
         if not program_name:
-            messagebox.showwarning("Advertencia", "Introduce el nombre del programa")
+            messagebox.showwarning(self.translator.get("warnings.warn_label"), self.translator.get("warnings.enter_program"))
             return
         
         self.disable_controls()
 
-        self.search_btn.configure(text="⏳ Buscando...")
+        self.search_btn.configure(text=self.translator.get("config.searching_btn"))
 
         self.add_log(f"🔍 Buscando programa: {program_name}")
-        self.progress_info.configure(text="Estado: Buscando programa y generando manifest...")
+        self.progress_info.configure(text=self.translator.get("progress.searching"))
+        self.info_label.configure(
+            text=self.translator.get("messages.searching"), 
+            text_color=("green", "lightgreen")
+        )
+
+        prevstatuslabel = self.status_label.cget("text") + " | "
+        self.status_label.configure(
+            text=prevstatuslabel + self.translator.get("messages.searching")
+        )
         
         def search_thread():
             try:
                 # Obtener info del programa
                 info = obtener_program_info(program_name)
                 self.program_info = info
-                self.log_queue.put(("log", f"✅ Programa encontrado: {info.get('titol')}"))
+                self.log_queue.put(("log", self.translator.get("messages.program_found",title=info.get('titol'))))
                 self.log_queue.put(("log", f"📺 ID: {info.get('id')}"))
                 
                 # Generar manifest automáticamente
@@ -1342,7 +1919,7 @@ class TV3_GUI(ctk.CTk):
                     if item.get("type") == "vtt":
                         subt=subt+1
 
-                self.log_queue.put(("log", f"✅ Manifest generado: {len(self.manifest_data.get('items', []))} archivos: {video} videos - {subt} subtitulos"))
+                self.log_queue.put(("log", self.translator.get("messages.manifest_generated",count=len(self.manifest_data.get('items', [])),videos=video,subs=subt)))
 
                 # Extraer calidades disponibles
                 self.extract_available_qualities()
@@ -1352,18 +1929,18 @@ class TV3_GUI(ctk.CTk):
                 self.after(0, self.populate_tree)
                 
                 self.after(0, lambda: self.info_label.configure(
-                    text=f"📺 {info.get('titol')} - {len(self.manifest_data.get('items', []))} archivos disponibles: {video} videos - {subt} subtitulos", 
+                    text=self.translator.get("messages.info_label_complete",title=info.get('titol'),files=len(self.manifest_data.get('items', [])),videos=video,subs=subt), 
                     text_color=("green", "lightgreen")
                 ))
                 self.progress_queue.put({"type": "info", "text": "✅ Programa cargado y listo para descargar"})
-                self.after(0, lambda: self.search_btn.configure(text="🔍 Buscar"))
+                self.after(0, lambda: self.search_btn.configure(text=self.translator.get("config.search_btn")))
             except Exception as e:
-                self.log_queue.put(("log", f"❌ Error: {str(e)}"))
+                self.log_queue.put(("log", self.translator.get("messages.program_not_found",message=str(e))))
                 self.program_info = None
                 self.manifest_data = None
-                self.after(0, lambda: self.info_label.configure(text="❌ Programa no encontrado", text_color=("red", "lightcoral")))
+                self.after(0, lambda: self.info_label.configure(text=self.translator.get("messages.program_not_found"), text_color=("red", "lightcoral")))
                 self.progress_queue.put({"type": "error", "text": str(e)})
-                self.after(0, lambda: self.search_btn.configure(text="🔍 Buscar"))
+                self.after(0, lambda: self.search_btn.configure(text=self.translator.get("config.search_btn")))
             finally:
                 self.after(0, self.enable_controls)
         
@@ -1394,14 +1971,26 @@ class TV3_GUI(ctk.CTk):
                 key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, 
                 reverse=True
             )
-            quality_list = ["Todas"] + ["Ninguna (No Video)"] + sorted_qualities
-            self.quality_combo.configure(values=quality_list, state="normal")
-            self.quality_var.set("Todas")
-            self.add_log(f"🎬 Calidades disponibles: {', '.join(sorted_qualities)}")
+            self.available_qualities = sorted_qualities
+        
+            # Crear lista de valores DISPLAY (lo que ve el usuario)
+            quality_display = [
+                self.translator.get("config.all_quality"),
+                self.translator.get("config.no_video")
+            ] + sorted_qualities
+        
+            self.quality_combo.configure(values=quality_display, state="normal")
+        
+            # La selección usa el valor LÓGICO, no el display
+            # Inicialmente seleccionar "Todas"
+            self.quality_var.set(self.translator.get("config.all_quality"))
+            self.current_quality_selection = self.QUALITY_ALL  # Guardar selección lógica
+        
+            self.add_log(f"🎬 {self.translator.get('messages.qualities_available', qualities=', '.join(sorted_qualities))}")
         else:
-            self.quality_combo.configure(values=["Todas"], state="normal")
+            self.quality_combo.configure(values=[self.translator.get("config.all_quality")], state="normal")
             self.add_log("⚠️ No se encontraron calidades específicas")
-    
+
     def extract_available_vttlangs(self):
         """Extraer idiomas de subtítulos disponibles"""
         try:
@@ -1421,26 +2010,52 @@ class TV3_GUI(ctk.CTk):
             self.log_queue.put(("log", f"⚠️ No se pudieron extraer los idiomas: {str(e)}"))
     
     def update_vttlang_selector(self, vttlangs):
+        """Actualizar selector de idiomas de subtítulos con las opciones disponibles"""
         if vttlangs:
-            sorted_vttlangs = sorted(
-                vttlangs, 
-                key=lambda x: int(''.join(filter(str.isdigit, x))) if any(c.isdigit() for c in x) else 0, 
-                reverse=True
-            )
-            vttlang_list = ["Todos"] + ["Ninguno (No Subs)"] + sorted_vttlangs
-            self.vttlang_combo.configure(values=vttlang_list, state="normal")
-            self.vttlang_var.set("Todos")
-            self.add_log(f"🎬 Subtítulos disponibles: {', '.join(sorted_vttlangs)}")
+            sorted_vttlangs = sorted(vttlangs)
+            self.available_subtitle_langs = sorted_vttlangs
+        
+            # Crear lista de valores DISPLAY (lo que ve el usuario)
+            subs_display = [
+                self.translator.get("config.all_subs"),
+                self.translator.get("config.no_subs")
+            ] + sorted_vttlangs
+        
+            self.vttlang_combo.configure(values=subs_display, state="normal")
+        
+            # Inicialmente seleccionar "Todos"
+            self.vttlang_var.set(self.translator.get("config.all_subs"))
+            self.current_subs_selection = self.SUBS_ALL  # Guardar selección lógica
+        
+            self.add_log(f"🎬 {self.translator.get('messages.subtitles_available', langs=', '.join(sorted_vttlangs))}")
         else:
-            self.vttlang_combo.configure(values=["Todos"], state="normal")
+            self.vttlang_combo.configure(values=[self.translator.get("config.all_subs")], state="normal")
             self.add_log("⚠️ No se encontraron subtítulos específicos")
-    
+
     def on_quality_change(self, choice):
-        """Aplicar filtro de calidad automáticamente"""
+        """Callback cuando cambia la selección de calidad"""
+        # Determinar qué opción lógica seleccionó
+        if choice == self.translator.get("config.all_quality"):
+            self.current_quality_selection = self.QUALITY_ALL
+        elif choice == self.translator.get("config.no_video"):
+            self.current_quality_selection = self.QUALITY_NONE
+        else:
+            # Es una calidad real (720p, 1080p, etc.)
+            self.current_quality_selection = choice
+    
         self.apply_quality_subtitle_filters()
     
     def on_vttlang_change(self, choice):
-        """Aplicar filtro de subtítulos automáticamente"""
+        """Callback cuando cambia la selección de idioma de subtítulos"""
+        # Determinar qué opción lógica seleccionó
+        if choice == self.translator.get("config.all_subs"):
+            self.current_subs_selection = self.SUBS_ALL
+        elif choice == self.translator.get("config.no_subs"):
+            self.current_subs_selection = self.SUBS_NONE
+        else:
+            # Es un idioma real (ca, es, en, etc.)
+            self.current_subs_selection = choice
+    
         self.apply_quality_subtitle_filters()
     
     def apply_quality_subtitle_filters(self):
@@ -1448,18 +2063,26 @@ class TV3_GUI(ctk.CTk):
         if not self.all_items:
             return
         
-        quality_filter = self.quality_var.get()
-        vttlang_filter = self.vttlang_var.get()
+        # Usar las selecciones LÓGICAS en lugar del texto mostrado
+        quality_filter = getattr(self, 'current_quality_selection', self.QUALITY_ALL)
+        vttlang_filter = getattr(self, 'current_subs_selection', self.SUBS_ALL)
         
         # Log de la acción
         filters_applied = []
-        if quality_filter != "Todas":
-            filters_applied.append(f"Calidad: {quality_filter}")
-        if vttlang_filter != "Todos":
-            filters_applied.append(f"Subtítulos: {vttlang_filter}")
-        
+        if quality_filter != self.QUALITY_ALL:
+            if quality_filter == self.QUALITY_NONE:
+                filters_applied.append(f"{self.translator.get('config.quality_label')} {self.translator.get('config.no_video')}")
+            else:
+                filters_applied.append(f"{self.translator.get('config.quality_label')} {quality_filter}")
+    
+        if vttlang_filter != self.SUBS_ALL:
+            if vttlang_filter == self.SUBS_NONE:
+                filters_applied.append(f"{self.translator.get('config.subtitles_label')} {self.translator.get('config.no_subs')}")
+            else:
+                filters_applied.append(f"{self.translator.get('config.subtitles_label')} {vttlang_filter}")
+    
         if filters_applied:
-            self.add_log(f"🔧 Aplicando filtros: {', '.join(filters_applied)}")
+            self.add_log(f"🔧 {self.translator.get('messages.filters_applied', filters=', '.join(filters_applied))}")
         
         # Aplicar filtros a todos los items
         for item_data in self.all_items:
@@ -1470,16 +2093,16 @@ class TV3_GUI(ctk.CTk):
             
             # Filtro de calidad (solo para MP4)
             if item_type == "MP4":
-                if quality_filter == "Ninguna (No Video)":
+                if quality_filter == self.QUALITY_NONE:
                     should_select = False
-                elif quality_filter != "Todas" and quality_filter not in item_quality:
+                elif quality_filter != self.QUALITY_ALL and quality_filter not in item_quality:
                     should_select = False
             
             # Filtro de subtítulos (solo para VTT)
             if item_type == "VTT":
-                if vttlang_filter == "Ninguno (No Subs)":
+                if vttlang_filter == self.SUBS_NONE:
                     should_select = False
-                elif vttlang_filter != "Todos" and vttlang_filter not in item_quality:
+                elif vttlang_filter != self.SUBS_ALL and vttlang_filter not in item_quality:
                     should_select = False
             
             # Actualizar selección
@@ -1490,24 +2113,25 @@ class TV3_GUI(ctk.CTk):
         
         # Contar seleccionados
         selected_count = sum(1 for item in self.all_items if item["selected"])
-        self.add_log(f"✓ Filtros aplicados: {selected_count} elementos seleccionados")
+        self.add_log(f"✓ {self.translator.get('messages.filters_result', count=selected_count)}")
+
     def start_download(self):
         if not self.program_info or not self.manifest_data:
-            messagebox.showwarning("Advertencia", "Primero busca un programa")
+            messagebox.showwarning(self.translator.get("warning.warn_label"), self.translator.get("warning.search_first"))
             return
         
         # Obtener items seleccionados
         selected_items = self.get_selected_items()
         
         if not selected_items:
-            messagebox.showwarning("Advertencia", "No has seleccionado ningún elemento para descargar")
+            messagebox.showwarning(self.translator.get("warning.warn_label"), self.translator.get("warning.no_selection"))
             return
         
         self.is_downloading = True
         self.disable_controls()
-        self.add_log(f"⬇️ Iniciando descarga de {len(selected_items)} elementos...")
+        self.add_log(self.translator.get("messages.download_start",count=len(selected_items)))
         self.progress_bar.set(0)
-        self.progress_info.configure(text="Estado: Descargando...")
+        self.progress_info.configure(text=self.translator.get("progress.downloading"))
         
         def download_thread():
             try:
@@ -1530,7 +2154,7 @@ class TV3_GUI(ctk.CTk):
                 )
                 
                 self.progress_queue.put({"type": "complete", "text": ""})
-                self.log_queue.put(("log", "🎉 ¡Descarga completada!"))
+                self.log_queue.put(("log", self.translator.get("messages.download_complete")))
             except Exception as e:
                 self.log_queue.put(("log", f"❌ Error en descarga: {str(e)}"))
                 self.progress_queue.put({"type": "error", "text": str(e)})
@@ -1582,14 +2206,14 @@ class TV3_GUI(ctk.CTk):
             })
     
         if skipped > 0:
-            self.log_queue.put(("log", f"⏭️ {skipped} archivos ya descargados (omitidos)"))
+            self.log_queue.put(("log", self.translator.get("messages.files_skipped",count=skipped)))
     
         if not tasks:
-            self.log_queue.put(("log", "ℹ️ No hay archivos pendientes de descarga"))
+            self.log_queue.put(("log", self.translator.get("messages.no_pending")))
             self.progress_queue.put({"type": "complete", "text": ""})
             return
     
-        self.log_queue.put(("log", f"🔄 Procesando {len(tasks)} archivos..."))
+        self.log_queue.put(("log", self.translator.get("messages.processing",count=len(tasks))))
     
         total_tasks = len(tasks)
         completed_tasks = 0
@@ -1612,17 +2236,17 @@ class TV3_GUI(ctk.CTk):
                     res = future.result()
                     if res:
                         completed_tasks += 1
-                        self.log_queue.put(("log", f"✅ Descargado: {filename}"))
+                        self.log_queue.put(("log", self.translator.get("message.downloaded",filename=filename)))
                     else:
                         failed_tasks.append(filename)
-                        self.log_queue.put(("log", f"⚠️ Fallo al descargar: {filename}"))
+                        self.log_queue.put(("log", self.translator.get("message.failed",filename=filename)))
                 
                     # Actualizar progreso
                     progress_value = (completed_tasks + len(failed_tasks)) / total_tasks
                     self.progress_queue.put({"type": "progress", "value": progress_value})
                     self.progress_queue.put({
                         "type": "info", 
-                        "text": f"Descargando: {completed_tasks}/{total_tasks} completados, {len(failed_tasks)} fallidos ({int(progress_value * 100)}%)"
+                        "text": self.translator.get("progress.downloading_status",completed=completed_tasks,total=total_tasks,failed=len(failed_tasks),percent=int(progress_value * 100))
                     })
                 except Exception as e:
                     failed_tasks.append(filename)
@@ -1747,7 +2371,7 @@ def obtener_program_info(nombonic):
                 return {"id": p.get("id"), "titol": p.get("titol"), "nombonic": p.get("nombonic")}
     except Exception as e:
         logger.debug("Error parsing programestv: %s", e)
-    raise RuntimeError(f"No se encontró programa con nombonic={nombonic}")
+    raise RuntimeError(self.translator.get("messages.program_not_found_name",nombonic=nombonic))
 
 def obtener_ids_capitulos(programatv_id, items_pagina=100, orden="capitol", workers=8, max_retries=2):
     params = {"items_pagina": items_pagina, "ordre": orden, "programatv_id": programatv_id, "pagina": 1}
