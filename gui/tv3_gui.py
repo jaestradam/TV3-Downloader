@@ -305,7 +305,25 @@ TRANSLATIONS_ES = {
         "title": "📋 Registro de actividad",
         "interface_loaded": "✅ Interfaz cargada con Vista Previa",
         "search_program": "ℹ️ Busca un programa para ver los capítulos disponibles",
-		"fetch_sizes": "📏 Iniciando obtención de tamaños..."
+		"fetch_sizes": "📏 Iniciando obtención de tamaños...",
+		"error_parsing_program": "Error parsing programestv: {error}",
+		"error_showing_stats_popup": "Error mostrando popup de estadísticas: {error}",
+		"error_restarting_app": "Error al reiniciar la aplicación: {error}",
+		"error_fetching_size": "Error obteniendo tamaño de {url}: {error}",
+		"error_cache_set": "Cache write failed {path}: {error}",
+		"error_extracting_media_url": "Error extrayendo IDCap {id}: {error}",
+		"info_recreate_tabs": "⚠️ Las pestañas han sido recreadas. Puede que se haya perdido información.",
+		"info_files_processed": "📏 Procesados {processed}/{total} archivos...",
+		"info_fetching_size": "✅ Tamaños obtenidos: Total {total_bytes}",
+		"info_selected_size": "📦 Seleccionados: {total_selected_bytes}",
+		"error_fetching_sizes": "❌ Error obteniendo tamaños: {error}",
+		"program_id": "📺 ID: {id}",
+		"info_getting_episodes": "📄 Obteniendo capítulos y generando manifest...",
+		"info_total_episodes": "📊 Total capítulos encontrados: {total}",
+		"error_fetching_quality": "⚠️ No se pudieron extraer las calidades: {error}",
+		"error_quality_not_found": "⚠️ No se encontraron calidades específicas",
+		"error_fetching_subs": "⚠️ No se pudieron extraer los idiomas: {error}",
+		"error_subs_not_found": "⚠️ No se encontraron subtítulos específicos"
     },
     "status": {
         "ready": "📊 Listo | 0 archivos | 0 B",
@@ -313,7 +331,7 @@ TRANSLATIONS_ES = {
     },
     "messages": {
         "program_not_found": "❌ Programa no encontrado",
-        "program_not_found_name": "No se encontró programa con nombonic={nombonic}",
+        "program_not_found_name": "❌ No se encontró programa con nombonic={nombonic}",
         "program_found": "✅ Programa encontrado: {title}",
         "total_chapters": "📊 Total capítulos encontrados: {count}",
         "manifest_generated": "✅ Manifest generado: {count} archivos: {videos} videos - {subs} subtitulos",
@@ -333,8 +351,10 @@ TRANSLATIONS_ES = {
         "error": "❌ Error: {message}",
         "filters_applied": "🔧 Aplicando filtros: {filters}",
         "filters_result": "✓ Filtros aplicados: {count} elementos seleccionados",
-        "language_changed": "Idioma cambiado a {lang}",
-        "ui_updated": "✅ Interfaz actualizada"
+        "language_changed": "🌐 Idioma cambiado a {lang}",
+        "ui_updated": "✅ Interfaz actualizada",
+		"select_folder": "Seleccionar carpeta de descarga",
+		"searching_program": "🔍 Buscando programa: {program_name}"
     },
     "warnings": {
         "warn_label": "Advertencia",
@@ -372,7 +392,7 @@ TRANSLATIONS_ES = {
         "close": "✔ Cerrar",
         "title_folder_not_found": "Carpeta no encontrada",
         "folder_not_found": "La carpeta no existe:\n{folder_path}",
-        "title_folder_error": "No se pudo abrir la carpeta:\n{error}",
+        "title_folder_error": "No se pudo abrir la carpeta",
         "folder_error": "No se pudo abrir la carpeta:\n{error}",
         "fb_title": "Descarga completada",
         "fb_completed": "✅ Descargados: {completed}\n",

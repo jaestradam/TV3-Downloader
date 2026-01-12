@@ -69,7 +69,7 @@
     "interface_loaded": "✅ 界面加载完毕",
     "search_program": "ℹ️ 请先搜索节目以查看可用章节",
     "fetch_sizes": "📏 开始获取文件大小...",
-    "error_parsing_program": "解析错误: {error}",
+	"error_parsing_program": "解析错误: {error}",
     "error_showing_stats_popup": "统计弹窗错误: {error}",
     "error_restarting_app": "重启错误: {error}",
     "error_fetching_size": "大小获取失败 {url}: {error}",
@@ -90,22 +90,22 @@
   },
   "status": {
     "ready": "📊 就绪 | 0 文件 | 0 B",
-    "selected": "📊 已选 {count} / 总计 {total} | {size}"
+    "selected": "📊 {count} 已选 ({total} 总计) | {size}"
   },
   "messages": {
     "program_not_found": "❌ 未找到节目",
     "program_not_found_name": "❌ 未找到 nombonic={nombonic} 的节目",
     "program_found": "✅ 找到节目: {title}",
     "total_chapters": "📊 共发现 {count} 个章节",
-    "manifest_generated": "✅ 清单已生成: {count} 个项目",
-    "info_label_complete": "📺 {title} - 可用文件: {files}",
-    "searching": "正在搜索...",
+    "manifest_generated": "✅ 清单已生成: {count} 个项目: {videos} 视频 - {subs} 字幕",
+    "info_label_complete": "📺 {title} - {files} 可用文件: {videos} 视频 - {subs} 字幕",
+    "searching": "正在搜索节目并生成清单...",
     "qualities_available": "🎬 可用画质: {qualities}",
     "subtitles_available": "🎬 可用字幕: {langs}",
     "items_loaded": "📊 已加载 {count} 个项目",
     "download_start": "⬇️ 开始下载 {count} 个项目...",
     "download_complete": "🎉 下载完成！",
-    "files_skipped": "⏭️ {count} 个文件已存在",
+    "files_skipped": "⏭️ {count} 个文件已存在（跳过）",
     "no_pending": "ℹ️ 无待下载文件",
     "processing": "📄 正在处理 {count} 个文件...",
     "downloaded": "✅ 已下载: {filename}",
@@ -116,7 +116,7 @@
     "filters_result": "✓ 过滤完成: 已选 {count} 个项目",
     "language_changed": "🌐 语言已更改为 {lang}",
     "ui_updated": "✅ 界面已更新",
-    "select_folder": "选择下载文件夹",
+	"select_folder": "选择下载文件夹",
     "searching_program": "🔍 正在搜索节目: {program_name}"
   },
   "warnings": {
@@ -124,7 +124,7 @@
     "enter_program": "请输入节目名称",
     "no_items": "未加载任何文件",
     "search_first": "请先搜索节目",
-    "no_selection": "尚未选择任何项目",
+    "no_selection": "您尚未选择任何项目",
     "download_in_progress": "下载正在进行中。确定要退出吗？\n\n部分下载的文件将被保留。"
   },
   "info": {
@@ -139,8 +139,8 @@
     "title_partial": "下载完成（含错误）",
     "title_failed": "下载失败",
     "title_finished": "流程结束",
-    "completed": "已完成",
-    "failed": "已失败",
+    "completed": "完成",
+    "failed": "失败",
     "skipped": "已存在",
     "total_size": "总大小",
     "details_title": "📋 详情",
@@ -153,7 +153,7 @@
     "and_more": "... 还有 {count} 个",
     "open_folder": "📂 打开文件夹",
     "close": "✔ 关闭",
-    "title_folder_not_found": "未找到文件夹",
+	"title_folder_not_found": "未找到文件夹",
     "folder_not_found": "文件夹不存在:\n{folder_path}",
     "title_folder_error": "错误",
     "folder_error": "无法打开文件夹:\n{error}",
@@ -166,7 +166,10 @@
   "tooltips": {
     "ilabel": "ℹ️",
     "program_name": "节目名称从 3cat 的 URL 获取。\n例如 Dr.Slump (https://www.3cat.cat/3cat/dr-slump/)，请输入 '''dr-slump'''。",
-    "workers": "加速下载的并发连接数。"
+    "workers": "并发连接数。如果下载频繁失败，请减少此数值。",
+    "aria2c": "使用多线程连接加速下载。",
+    "resume": "仅下载未完成的 .part 文件。不要在查找新章节时使用。",
+    "output_folder": "在选定文件夹内将按节目名称创建子文件夹。"
   },
   "help": {
     "title": "帮助 - TV3 GUI Downloader",
@@ -207,7 +210,7 @@
       "• Ctrl+I: 反向选择",
       "• Ctrl+F: 搜索/过滤",
       "• F5: 刷新当前节目",
-      "• Enter: 搜索节目（在搜索栏中）",
+      "• Enter: 搜索节目",
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "",

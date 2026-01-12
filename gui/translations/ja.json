@@ -25,7 +25,7 @@
     "resume_checkbox": "再開モードのみ",
     "output_label": "保存先:",
     "browse_btn": "📁",
-    "download_btn": "⬇️ 選択項目をダウンロード",
+    "download_btn": "⬇️ 選択した項目をダウンロード",
     "all_quality": "すべて",
     "no_video": "なし (ビデオなし)",
     "all_subs": "すべて",
@@ -62,14 +62,14 @@
     "downloading": "状態: ダウンロード中...",
     "active_downloads": "⚡ アクティブなダウンロード",
     "no_downloads": "アクティブなタスクはありません",
-    "downloading_status": "進捗: {completed}/{total} 完了、{failed} 失敗 ({percent}%)"
+    "downloading_status": "ダウンロード中: {completed}/{total} 完了、{failed} 失敗 ({percent}%)"
   },
   "logs": {
     "title": "📋 アクティビティログ",
-    "interface_loaded": "✅ インターフェースをロードしました",
+    "interface_loaded": "✅ プレビュー機能付きインターフェースをロードしました",
     "search_program": "ℹ️ 番組を検索して利用可能なチャプターを表示してください",
     "fetch_sizes": "📏 ファイルサイズの取得を開始します...",
-    "error_parsing_program": "解析エラー: {error}",
+	"error_parsing_program": "解析エラー: {error}",
     "error_showing_stats_popup": "統計表示エラー: {error}",
     "error_restarting_app": "再起動エラー: {error}",
     "error_fetching_size": "サイズ取得失敗 {url}: {error}",
@@ -96,16 +96,16 @@
     "program_not_found": "❌ 番組が見つかりません",
     "program_not_found_name": "❌ nombonic={nombonic} の番組は見つかりませんでした",
     "program_found": "✅ 番組発見: {title}",
-    "total_chapters": "📊 合計チャプター数: {count}",
-    "manifest_generated": "✅ マニフェスト生成完了: {count} 項目",
-    "info_label_complete": "📺 {title} - {files} ファイル利用可能",
-    "searching": "番組検索中...",
+    "total_chapters": "📊 見つかった総チャプター数: {count}",
+    "manifest_generated": "✅ マニフェスト生成完了: {count} 項目: ビデオ {videos} - 字幕 {subs}",
+    "info_label_complete": "📺 {title} - {files} ファイル利用可能: ビデオ {videos} - 字幕 {subs}",
+    "searching": "番組検索およびマニフェスト生成中...",
     "qualities_available": "🎬 利用可能な画質: {qualities}",
     "subtitles_available": "🎬 利用可能な字幕: {langs}",
     "items_loaded": "📊 プレビューに {count} 項目をロードしました",
     "download_start": "⬇️ {count} 項目のダウンロードを開始します...",
     "download_complete": "🎉 ダウンロードが完了しました！",
-    "files_skipped": "⏭️ {count} ファイルは既に存在します",
+    "files_skipped": "⏭️ {count} ファイルは既にダウンロード済みです（スキップ）",
     "no_pending": "ℹ️ ダウンロード待ちのファイルはありません",
     "processing": "📄 {count} ファイルを処理中...",
     "downloaded": "✅ ダウンロード完了: {filename}",
@@ -116,7 +116,7 @@
     "filters_result": "✓ フィルター適用完了: {count} 項目選択済み",
     "language_changed": "🌐 言語を {lang} に変更しました",
     "ui_updated": "✅ インターフェースを更新しました",
-    "select_folder": "ダウンロードフォルダを選択",
+	"select_folder": "ダウンロードフォルダを選択",
     "searching_program": "🔍 番組検索中: {program_name}"
   },
   "warnings": {
@@ -124,8 +124,8 @@
     "enter_program": "番組名を入力してください",
     "no_items": "ファイルがロードされていません",
     "search_first": "最初に番組を検索してください",
-    "no_selection": "項目が選択されていません",
-    "download_in_progress": "ダウンロードが進行中です。終了してもよろしいですか？\n\n一時ファイルは保存されます。"
+    "no_selection": "ダウンロードする項目が選択されていません",
+    "download_in_progress": "ダウンロードが進行中です。終了してもよろしいですか？\n\n一時ファイルは保存され、後で再開できます。"
   },
   "info": {
     "language_change_title": "言語変更",
@@ -146,14 +146,14 @@
     "details_title": "📋 詳細",
     "total_time": "🕐 合計時間: {time}",
     "folder": "📁 フォルダ: {path}",
-    "files_ok": "✅ 正常終了: {count}",
-    "files_error": "\n❌ エラー: {count}",
-    "files_existed": "⏭️ 既存: {count}",
+    "files_ok": "✅ 正常にダウンロードされたファイル: {count}",
+    "files_error": "\n❌ エラーが発生したファイル: {count}",
+    "files_existed": "⏭️ 既に存在していたファイル: {count}",
     "failed_files": "失敗したファイル:",
     "and_more": "... 他 {count} 件",
     "open_folder": "📂 フォルダを開く",
     "close": "✔ 閉じる",
-    "title_folder_not_found": "フォルダなし",
+	"title_folder_not_found": "フォルダなし",
     "folder_not_found": "フォルダが存在しません:\n{folder_path}",
     "title_folder_error": "エラー",
     "folder_error": "フォルダを開けませんでした:\n{error}",
@@ -166,7 +166,10 @@
   "tooltips": {
     "ilabel": "ℹ️",
     "program_name": "番組名は3catのURLから取得します。\n例：Dr.Slump (https://www.3cat.cat/3cat/dr-slump/) の場合、'''dr-slump''' と入力します。",
-    "workers": "同時ダウンロード数。速度を上げるために増やします。"
+    "workers": "同時ダウンロード数。失敗する場合は数を減らしてください。",
+    "aria2c": "複数接続を使用した高速ダウンロード。",
+    "resume": ".partファイルのみを再開します。新規チャプターの取得には使用しないでください。",
+    "output_folder": "選択したフォルダ内に番組名のサブフォルダが作成されます。"
   },
   "help": {
     "title": "ヘルプ - TV3 GUI Downloader",
@@ -207,7 +210,7 @@
       "• Ctrl+I: 選択を反転",
       "• Ctrl+F: 検索/フィルター",
       "• F5: 現在の番組を更新",
-      "• Enter: 番組を検索 (検索フィールド内)",
+      "• Enter: 番組を検索",
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "",
@@ -220,7 +223,7 @@
       "",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
       "",
-      "🔧 お困りですか？ 対応するタブのログを確認してください。"
+      "🔧 お困りですか？ ログタブを確認してください。"
     ]
   }
 }

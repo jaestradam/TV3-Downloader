@@ -155,7 +155,7 @@
     "close": "✔ Tancar",
     "title_folder_not_found": "Carpeta no trobada",
     "folder_not_found": "La carpeta no existeix:\n{folder_path}",
-    "title_folder_error": "No s'ha pogut obrir la carpeta:\n{error}",
+    "title_folder_error": "No s'ha pogut obrir la carpeta",
     "folder_error": "No s'ha pogut obrir la carpeta:\n{error}",
     "fb_title": "Descàrrega completada",
     "fb_completed": "✅ Descarregats: {completed}\n",

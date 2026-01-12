@@ -3,7 +3,7 @@
         "language_name": "Español"
     },
     "app": {
-        "title": "TV3 Enmassa Downloader",
+        "title": "TV3 GUI Downloader",
         "version": "v1.0 GUI"
     },
     "tabs": {
@@ -155,7 +155,7 @@
         "close": "✔ Cerrar",
         "title_folder_not_found": "Carpeta no encontrada",
         "folder_not_found": "La carpeta no existe:\n{folder_path}",
-        "title_folder_error": "No se pudo abrir la carpeta:\n{error}",
+        "title_folder_error": "No se pudo abrir la carpeta",
         "folder_error": "No se pudo abrir la carpeta:\n{error}",
         "fb_title": "Descarga completada",
         "fb_completed": "✅ Descargados: {completed}\n",
@@ -172,12 +172,12 @@
         "output_folder": "Dentro de la carpeta indicada se generará otra carpeta con el nombre de la serie/programa a descargar."
     },
     "help": {
-        "title": "Ayuda - TV3 Enmassa Downloader",
+        "title": "Ayuda - TV3 GUI Downloader",
         "close": "Cerrar",
         "label": "❓",
         "content": [
             "",
-            "🎬 TV3 ENMASSA DOWNLOADER - GUÍA RÁPIDA",
+            "🎬 TV3 GUI DOWNLOADER - GUÍA RÁPIDA",
             "",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",

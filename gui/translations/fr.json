@@ -155,7 +155,7 @@
     "close": "✔ Fermer",
     "title_folder_not_found": "Dossier non trouvé",
     "folder_not_found": "Le dossier n'existe pas :\n{folder_path}",
-    "title_folder_error": "Impossible d'ouvrir le dossier :\n{error}",
+    "title_folder_error": "Impossible d'ouvrir le dossier",
     "folder_error": "Impossible d'ouvrir le dossier :\n{error}",
     "fb_title": "Téléchargement terminé",
     "fb_completed": "✅ Téléchargés : {completed}\n",

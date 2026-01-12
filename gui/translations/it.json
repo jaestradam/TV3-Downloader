@@ -155,7 +155,7 @@
     "close": "✔ Chiudi",
     "title_folder_not_found": "Cartella non trovata",
     "folder_not_found": "La cartella non esiste:\n{folder_path}",
-    "title_folder_error": "Impossibile aprire la cartella:\n{error}",
+    "title_folder_error": "Impossibile aprire la cartella",
     "folder_error": "Impossibile aprire la cartella:\n{error}",
     "fb_title": "Download terminato",
     "fb_completed": "✅ Scaricati: {completed}\n",

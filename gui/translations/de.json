@@ -155,7 +155,7 @@
     "close": "✔ Schließen",
     "title_folder_not_found": "Ordner nicht gefunden",
     "folder_not_found": "Der Ordner existiert nicht:\n{folder_path}",
-    "title_folder_error": "Ordner konnte nicht geöffnet werden:\n{error}",
+    "title_folder_error": "Ordner konnte nicht geöffnet werden",
     "folder_error": "Ordner konnte nicht geöffnet werden:\n{error}",
     "fb_title": "Download beendet",
     "fb_completed": "✅ Heruntergeladen: {completed}\n",
